@@ -1,0 +1,22 @@
+node_modules/
+dist/
+dist-electron/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+
+# Claude Code local state
+.claude/
+
+# Local project state
+.openkb/
