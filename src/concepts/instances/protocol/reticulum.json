@@ -1,0 +1,20 @@
+{
+  "ID": "reticulum",
+  "name": "Reticulum",
+  "family": "Custom",
+  "layers": ["link", "network", "transport", "application"],
+  "modulations": [],
+  "transport": "Any (LoRa, TCP, packet radio, serial, I2P)",
+  "max_payload": 500,
+  "typical_range_km": 10,
+  "encryption": "X25519 + AES-128 per-link, forward secrecy",
+  "governance": "Open spec (RNS), single primary maintainer",
+  "open_source": true,
+  "summary": "Cryptographic networking stack that runs over any transport. Self-configuring, addresses are public keys, forward-secret by default.",
+  "why": "An internet that doesn't depend on global IP, DNS, or CAs — every destination is a key, every hop is encrypted.",
+  "tradeoffs": "Smaller ecosystem than IP. Higher per-packet overhead than raw LoRa. No central directory — discovery is gossip-based.",
+  "reference_url": "https://reticulum.network",
+  "difficulty": 3,
+  "routing_scheme": "aodv",
+  "tx_power_dbm_typical": 20
+}

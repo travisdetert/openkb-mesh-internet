@@ -1,0 +1,14 @@
+{
+  "ID": "MedFast",
+  "name": "Medium Fast",
+  "label": "Medium Fast",
+  "scheme": "CSS",
+  "sf": 9,
+  "bw": 250000,
+  "cr": 5,
+  "sensitivity_dbm": -132,
+  "bitrate_bps": 3520,
+  "airtime_sec_50byte": 0.31,
+  "default_range": "medium",
+  "notes": "Balanced. Common default in Europe."
+}

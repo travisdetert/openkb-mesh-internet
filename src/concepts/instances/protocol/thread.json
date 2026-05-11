@@ -1,0 +1,20 @@
+{
+  "ID": "thread",
+  "name": "Thread",
+  "family": "Thread",
+  "layers": ["link", "network"],
+  "modulations": [],
+  "transport": "IEEE 802.15.4 (2.4 GHz)",
+  "max_payload": 1280,
+  "typical_range_km": 0.03,
+  "encryption": "AES-128-CCM",
+  "governance": "Thread Group (industry consortium, certified)",
+  "open_source": false,
+  "summary": "IPv6 mesh for low-power home devices. Self-healing, no single point of failure once you have a Border Router.",
+  "why": "A standards-based replacement for vendor-locked smart-home protocols (Zigbee, Z-Wave) that speaks IP natively.",
+  "tradeoffs": "Range is room-scale. Needs a Border Router for internet egress. Closed certification process.",
+  "reference_url": "https://www.threadgroup.org",
+  "difficulty": 2,
+  "routing_scheme": "olsr",
+  "tx_power_dbm_typical": 8
+}

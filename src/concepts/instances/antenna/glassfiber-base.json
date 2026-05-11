@@ -1,0 +1,15 @@
+{
+  "ID": "glassfiber-base",
+  "name": "Fiberglass base station omni (~5 dBi)",
+  "type": "omni",
+  "gain_dbi": 5.5,
+  "vswr": "<1.5",
+  "form_factor": "~1 m vertical",
+  "price_usd_low": 25,
+  "price_usd_high": 60,
+  "connector": "n-male",
+  "polarization": "vertical",
+  "bands": ["US", "EU868", "JP", "AU"],
+  "best_for": "Roof-mounted home node. Best gain-per-dollar upgrade. Doubles or triples typical range.",
+  "watch_out": "Needs proper coax (LMR-240/400) or losses eat the gain. Thunderstorm: ground it."
+}

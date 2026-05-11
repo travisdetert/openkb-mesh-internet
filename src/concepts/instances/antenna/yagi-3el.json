@@ -1,0 +1,16 @@
+{
+  "ID": "yagi-3el",
+  "name": "3-element Yagi (~7 dBi)",
+  "type": "directional",
+  "gain_dbi": 7,
+  "beamwidth_deg": 80,
+  "vswr": "<1.5",
+  "form_factor": "~30 cm boom",
+  "price_usd_low": 25,
+  "price_usd_high": 50,
+  "connector": "n-male",
+  "polarization": "linear-mountable",
+  "bands": ["US", "EU868", "JP", "AU"],
+  "best_for": "Pointing at a known distant node or repeater. Wide enough beam to be forgiving.",
+  "watch_out": "Pointing the wrong direction = worse than stock. Wind/rain detune. Match polarization with the far end."
+}

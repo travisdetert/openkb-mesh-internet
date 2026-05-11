@@ -1,0 +1,5 @@
+{
+  "ID": "discovery",
+  "name": "Discovery",
+  "summary": "Looking for someone. Address resolution, route request, neighbor solicitation. Reactive — sent when you need to find a destination."
+}

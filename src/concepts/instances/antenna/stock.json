@@ -1,0 +1,15 @@
+{
+  "ID": "stock",
+  "name": "Stock rubber duck (~3 dBi)",
+  "type": "omni",
+  "gain_dbi": 2.5,
+  "vswr": "~1.5–2.0",
+  "form_factor": "~10 cm helical",
+  "price_usd_low": 0,
+  "price_usd_high": 0,
+  "connector": "rp-sma-male",
+  "polarization": "vertical",
+  "bands": ["*"],
+  "best_for": "Pocket carry. Proves the device works out of the box.",
+  "watch_out": "Half the advertised gain in practice. Detuned by your hand. Not a long-range solution."
+}

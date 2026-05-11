@@ -1,0 +1,20 @@
+{
+  "Name": "Environment",
+  "Slug": "environment",
+  "Description": "An RF propagation context — terrain, obstacles, noise — that determines how signal degrades with distance.",
+  "Icon": "globe",
+  "Active": true,
+  "Category": "Physical Layer",
+  "Attributes": [
+    { "Name": "Name",                       "Slug": "name",                  "Type": "String", "Required": true },
+    { "Name": "Path Loss Exponent",         "Slug": "path_loss_exponent",    "Type": "Number", "Description": "n in PL = PL₀ + 10·n·log₁₀(d/d₀). Free space = 2." },
+    { "Name": "Reference Distance (m)",     "Slug": "ref_distance_m",        "Type": "Number" },
+    { "Name": "Reference Path Loss (dB)",   "Slug": "ref_path_loss_db",      "Type": "Number", "Description": "Path loss at the reference distance for ~900 MHz" },
+    { "Name": "Shadow Fading σ (dB)",       "Slug": "shadow_fading_sigma_db","Type": "Number", "Description": "Log-normal sigma — produces honest p10/p50/p90 spread" },
+    { "Name": "Noise Floor (dBm)",          "Slug": "noise_floor_dbm",       "Type": "Number" },
+    { "Name": "Line of Sight",              "Slug": "line_of_sight",         "Type": "Boolean" },
+    { "Name": "Multipath Fading",           "Slug": "multipath_fading",      "Type": "String", "Description": "negligible | Rician | Rayleigh" },
+    { "Name": "Summary",                    "Slug": "summary",               "Type": "Text" },
+    { "Name": "Real-world Examples",        "Slug": "real_world_examples",   "Type": "Text" }
+  ]
+}

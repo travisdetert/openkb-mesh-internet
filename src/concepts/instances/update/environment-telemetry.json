@@ -1,0 +1,17 @@
+{
+  "ID": "environment-telemetry",
+  "name": "Environment Telemetry",
+  "type": "telemetry",
+  "topic": "sensor-readings",
+  "payload_bytes_typical": 24,
+  "payload_bytes_max": 64,
+  "frequency_hz": 0.0033,
+  "ttl_sec": 900,
+  "priority": 0,
+  "idempotent": true,
+  "requires_ack": false,
+  "reach": "broadcast",
+  "encoding_shape": "snapshot",
+  "restates_if_missed": true,
+  "summary": "Temp, humidity, pressure, lux, IAQ. The classic LoRa weather-station payload. Could be 80% smaller as a delta from the last reading."
+}

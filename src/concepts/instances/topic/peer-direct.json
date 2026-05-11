@@ -1,0 +1,7 @@
+{
+  "ID": "peer-direct",
+  "name": "A specific peer",
+  "kind": "node",
+  "selector": "peer-id",
+  "summary": "Unicast to one node id, possibly multi-hop routed."
+}

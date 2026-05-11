@@ -1,0 +1,15 @@
+{
+  "ID": "quarter-wave-wire",
+  "name": "1/4-wave wire on SMA (~2 dBi)",
+  "type": "omni",
+  "gain_dbi": 2,
+  "vswr": "~1.5",
+  "form_factor": "~8 cm wire (915 MHz) / ~8.6 cm (868 MHz) / ~17 cm (433 MHz)",
+  "price_usd_low": 1,
+  "price_usd_high": 5,
+  "connector": "rp-sma-male",
+  "polarization": "vertical",
+  "bands": ["US", "EU868", "EU433", "JP", "AU"],
+  "best_for": "The cheapest legit upgrade. A straight piece of solid-core wire at the right length beats most stock ducks.",
+  "watch_out": "No counterpoise unless you provide one — best when the radio body or a ground plane sits below it."
+}

@@ -1,0 +1,14 @@
+{
+  "ID": "LongSlow",
+  "name": "Long Slow",
+  "label": "Long Slow",
+  "scheme": "CSS",
+  "sf": 12,
+  "bw": 125000,
+  "cr": 8,
+  "sensitivity_dbm": -143,
+  "bitrate_bps": 183,
+  "airtime_sec_50byte": 5.9,
+  "default_range": "long",
+  "notes": "Maximum range. Used for long-distance balloon and wilderness deployments. Channel-hogging."
+}

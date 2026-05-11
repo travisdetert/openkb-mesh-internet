@@ -1,0 +1,16 @@
+{
+  "ID": "moxon",
+  "name": "Moxon 2-element (~6 dBi)",
+  "type": "directional",
+  "gain_dbi": 6,
+  "beamwidth_deg": 120,
+  "vswr": "<1.5",
+  "form_factor": "~25 × 15 cm rectangle",
+  "price_usd_low": 15,
+  "price_usd_high": 40,
+  "connector": "bare-wire",
+  "polarization": "linear-mountable",
+  "bands": ["US", "EU868", "EU433"],
+  "best_for": "Compact directional with a strong rear null (~25 dB f/b). Easy DIY build, less unwieldy than a Yagi.",
+  "watch_out": "Single-band geometry — must be cut for 868 or 915, not both."
+}

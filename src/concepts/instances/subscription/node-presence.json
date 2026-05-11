@@ -1,0 +1,11 @@
+{
+  "ID": "node-presence",
+  "name": "Mesh-wide presence",
+  "topic_filter": "mesh-wide",
+  "event_types": ["presence", "position"],
+  "max_staleness_sec": 1800,
+  "wire_bytes_per_event": 30,
+  "wire_bytes_subscribe": 16,
+  "delivery": "at-most-once",
+  "summary": "Watch all nodes appear and move. Stale-snapshot fallback if no event has arrived in 30 min."
+}

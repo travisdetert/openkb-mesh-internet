@@ -1,0 +1,12 @@
+{
+  "ID": "source-routed",
+  "name": "Source-routed (label switching)",
+  "family": "hybrid",
+  "hop_latency_ms_typical": 15,
+  "hop_loss_probability_typical": 0.03,
+  "max_practical_hops": 8,
+  "route_discovery_cost_hops": 2,
+  "retransmits_on_loss": 1,
+  "failure_mode": "Sender carries the full path as a label stack. Any failed hop drops the packet — sender must rediscover and retry. Scales sub-linearly with mesh size.",
+  "summary": "Routing decisions baked into the packet itself (cjdns 'labels'). Forwarders are dumb — they read the next hop from the label and pass it on. Tiny per-hop work, but path repair is the sender's problem."
+}

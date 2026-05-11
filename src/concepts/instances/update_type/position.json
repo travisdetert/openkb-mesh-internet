@@ -1,0 +1,5 @@
+{
+  "ID": "position",
+  "name": "Position",
+  "summary": "Where I am. Lat/lon/alt, optionally speed/heading. Compact integer encodings dominate."
+}

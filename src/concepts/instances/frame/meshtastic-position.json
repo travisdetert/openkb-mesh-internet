@@ -1,0 +1,11 @@
+{
+  "ID": "meshtastic-position",
+  "name": "Meshtastic / Position Beacon",
+  "update": "position-beacon",
+  "protocol": "meshtastic",
+  "encoding": "protobuf (MeshPacket + Position)",
+  "header_bytes": 16,
+  "payload_bytes": 14,
+  "total_bytes": 30,
+  "notes": "Position { latitude_i, longitude_i, altitude, time }. int32×3 + uint32. Compact and idempotent."
+}

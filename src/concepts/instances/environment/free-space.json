@@ -1,0 +1,13 @@
+{
+  "ID": "free-space",
+  "name": "Free Space (textbook)",
+  "path_loss_exponent": 2.0,
+  "ref_distance_m": 1,
+  "ref_path_loss_db": 31.5,
+  "shadow_fading_sigma_db": 0,
+  "noise_floor_dbm": -120,
+  "line_of_sight": true,
+  "multipath_fading": "negligible",
+  "summary": "The Friis equation. n=2, no obstacles, no fading. This is what vendors quote and what nobody experiences.",
+  "real_world_examples": "High-altitude balloon to ground station. Calibration baseline."
+}

@@ -1,0 +1,14 @@
+{
+  "ID": "ShortFast",
+  "name": "Short Fast",
+  "label": "Short Fast",
+  "scheme": "CSS",
+  "sf": 7,
+  "bw": 250000,
+  "cr": 5,
+  "sensitivity_dbm": -126,
+  "bitrate_bps": 10940,
+  "airtime_sec_50byte": 0.13,
+  "default_range": "short",
+  "notes": "High throughput, ~2× the sensitivity of ShortTurbo. Good default for cities."
+}

@@ -1,0 +1,17 @@
+{
+  "ID": "position-beacon",
+  "name": "Position Beacon",
+  "type": "position",
+  "topic": "node-self",
+  "payload_bytes_typical": 12,
+  "payload_bytes_max": 32,
+  "frequency_hz": 0.0033,
+  "ttl_sec": 900,
+  "priority": 1,
+  "idempotent": true,
+  "requires_ack": false,
+  "reach": "broadcast",
+  "encoding_shape": "snapshot",
+  "restates_if_missed": true,
+  "summary": "Lat/lon/alt as int32×3 + a timestamp. Every ~5 minutes is a common cadence. Snapshot — the next one fully replaces the prior."
+}

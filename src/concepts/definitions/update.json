@@ -1,0 +1,24 @@
+{
+  "Name": "Update",
+  "Slug": "update",
+  "Description": "One piece of information transmitted on the mesh. Protocol-agnostic — a Frame describes how a given Protocol carries it.",
+  "Icon": "send",
+  "Active": true,
+  "Category": "Information",
+  "Attributes": [
+    { "Name": "Name",                  "Slug": "name",                  "Type": "String",    "Required": true },
+    { "Name": "Type",                  "Slug": "type",                  "Type": "Reference", "ReferenceConcept": "update_type" },
+    { "Name": "Topic",                 "Slug": "topic",                 "Type": "Reference", "ReferenceConcept": "topic" },
+    { "Name": "Payload Bytes Typical", "Slug": "payload_bytes_typical", "Type": "Number" },
+    { "Name": "Payload Bytes Max",     "Slug": "payload_bytes_max",     "Type": "Number" },
+    { "Name": "Frequency (Hz)",        "Slug": "frequency_hz",          "Type": "Number",    "Description": "Typical emit rate per node, fractional ok" },
+    { "Name": "TTL (sec)",             "Slug": "ttl_sec",               "Type": "Number" },
+    { "Name": "Priority",              "Slug": "priority",              "Type": "Number",    "Description": "0=background gossip, 5=user-initiated" },
+    { "Name": "Idempotent",            "Slug": "idempotent",            "Type": "Boolean" },
+    { "Name": "Requires Ack",          "Slug": "requires_ack",          "Type": "Boolean" },
+    { "Name": "Reach",                 "Slug": "reach",                 "Type": "String",    "Description": "neighbor | channel | broadcast | unicast-routed" },
+    { "Name": "Encoding Shape",        "Slug": "encoding_shape",        "Type": "String",    "Description": "delta | snapshot | event | query" },
+    { "Name": "Restates If Missed",    "Slug": "restates_if_missed",    "Type": "Boolean",   "Description": "If true, missing this update is recoverable from later updates; if false, you lose information" },
+    { "Name": "Summary",               "Slug": "summary",               "Type": "Text" }
+  ]
+}

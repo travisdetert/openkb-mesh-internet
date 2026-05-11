@@ -1,0 +1,7 @@
+{
+  "ID": "node-self",
+  "name": "About this node",
+  "kind": "node",
+  "selector": "self",
+  "summary": "Updates about the emitting node — its identity, position, telemetry."
+}

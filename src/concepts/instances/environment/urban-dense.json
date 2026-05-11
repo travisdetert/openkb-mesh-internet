@@ -1,0 +1,13 @@
+{
+  "ID": "urban-dense",
+  "name": "Dense Urban",
+  "path_loss_exponent": 4.2,
+  "ref_distance_m": 1,
+  "ref_path_loss_db": 31.5,
+  "shadow_fading_sigma_db": 9,
+  "noise_floor_dbm": -100,
+  "line_of_sight": false,
+  "multipath_fading": "Rayleigh",
+  "summary": "Concrete and steel cut sub-GHz signals fast. Reflections give surprising paths around buildings, but predictable range collapses. High RF noise from everything else on ISM.",
+  "real_world_examples": "Manhattan street level. Tokyo. Central London. Hong Kong."
+}

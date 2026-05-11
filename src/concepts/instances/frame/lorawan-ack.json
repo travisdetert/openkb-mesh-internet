@@ -1,0 +1,11 @@
+{
+  "ID": "lorawan-ack",
+  "name": "LoRaWAN / Ack",
+  "update": "ack-packet",
+  "protocol": "lorawan",
+  "encoding": "MAC header ACK bit (no payload)",
+  "header_bytes": 13,
+  "payload_bytes": 0,
+  "total_bytes": 13,
+  "notes": "LoRaWAN acks are a single bit in the MAC header — there's no separate payload. Cheapest possible ack on this list."
+}

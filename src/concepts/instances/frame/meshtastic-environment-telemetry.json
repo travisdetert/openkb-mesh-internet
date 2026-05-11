@@ -1,0 +1,11 @@
+{
+  "ID": "meshtastic-environment-telemetry",
+  "name": "Meshtastic / Environment Telemetry",
+  "update": "environment-telemetry",
+  "protocol": "meshtastic",
+  "encoding": "protobuf (MeshPacket + Telemetry.EnvironmentMetrics)",
+  "header_bytes": 16,
+  "payload_bytes": 26,
+  "total_bytes": 42,
+  "notes": "temperature, relative_humidity, barometric_pressure, gas_resistance, lux, white_lux as floats. Sparse — only fields present cost bytes."
+}

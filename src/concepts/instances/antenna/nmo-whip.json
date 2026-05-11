@@ -1,0 +1,15 @@
+{
+  "ID": "nmo-whip",
+  "name": "NMO / mag-mount vehicle whip (~3 dBi)",
+  "type": "omni",
+  "gain_dbi": 3,
+  "vswr": "<1.8",
+  "form_factor": "~20 cm whip on magnetic base",
+  "price_usd_low": 20,
+  "price_usd_high": 50,
+  "connector": "sma-male",
+  "polarization": "vertical",
+  "bands": ["US", "EU868", "JP", "AU"],
+  "best_for": "Mobile / car-roof use. The vehicle body is your ground plane — works far better than a handheld duck while driving.",
+  "watch_out": "Most NMO whips terminate in SMA — you may need an SMA→RP-SMA adapter for T-Beam/Heltec."
+}

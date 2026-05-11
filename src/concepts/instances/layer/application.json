@@ -1,0 +1,6 @@
+{
+  "ID": "application",
+  "name": "Application",
+  "osi_level": 7,
+  "summary": "What users actually do with the mesh — chat, telemetry, file transfer, named services."
+}

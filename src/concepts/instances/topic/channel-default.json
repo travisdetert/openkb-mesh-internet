@@ -1,0 +1,7 @@
+{
+  "ID": "channel-default",
+  "name": "Default channel",
+  "kind": "channel",
+  "selector": "primary",
+  "summary": "The shared chat channel everyone on a mesh sees by default."
+}

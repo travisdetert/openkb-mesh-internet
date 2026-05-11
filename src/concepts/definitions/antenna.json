@@ -1,0 +1,23 @@
+{
+  "Name": "Antenna",
+  "Slug": "antenna",
+  "Description": "A physical antenna with gain, pattern, polarization, and a connector — what couples your radio to the air.",
+  "Icon": "antenna",
+  "Active": true,
+  "Category": "Physical Layer",
+  "Attributes": [
+    { "Name": "Name",            "Slug": "name",          "Type": "String",  "Required": true },
+    { "Name": "Type",            "Slug": "type",          "Type": "String",  "Description": "omni | directional | fractal" },
+    { "Name": "Gain (dBi)",      "Slug": "gain_dbi",      "Type": "Number" },
+    { "Name": "Beamwidth (deg)", "Slug": "beamwidth_deg", "Type": "Number" },
+    { "Name": "VSWR",            "Slug": "vswr",          "Type": "String" },
+    { "Name": "Form Factor",     "Slug": "form_factor",   "Type": "String" },
+    { "Name": "Price USD Low",   "Slug": "price_usd_low", "Type": "Number" },
+    { "Name": "Price USD High",  "Slug": "price_usd_high","Type": "Number" },
+    { "Name": "Connector",       "Slug": "connector",     "Type": "String",  "Description": "rp-sma-male | sma-male | n-male | u.fl | integrated | bare-wire" },
+    { "Name": "Polarization",    "Slug": "polarization",  "Type": "String",  "Description": "vertical | horizontal | circular | linear-mountable" },
+    { "Name": "Bands",           "Slug": "bands",         "Type": "String",  "Collection": true, "Description": "Region IDs or '*' for wideband" },
+    { "Name": "Best For",        "Slug": "best_for",      "Type": "Text" },
+    { "Name": "Watch Out",       "Slug": "watch_out",     "Type": "Text" }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "ID": "lorawan",
+  "name": "LoRaWAN",
+  "family": "LoRa",
+  "layers": ["link", "network"],
+  "modulations": ["ShortFast", "MedFast", "LongFast", "LongSlow"],
+  "transport": "RF (sub-GHz ISM)",
+  "max_payload": 242,
+  "typical_range_km": 10,
+  "encryption": "AES-128 (NwkSKey + AppSKey, derived from device keys)",
+  "governance": "LoRa Alliance (industry consortium, paid spec)",
+  "open_source": false,
+  "summary": "Star-of-stars: end devices talk to gateways which forward to a network server. Not a peer mesh.",
+  "why": "Long-range low-power telemetry to the cloud — meters, sensors, asset trackers — managed by an operator.",
+  "tradeoffs": "Centralized network server, gateways are infra you must run or rent. No node-to-node messaging.",
+  "reference_url": "https://lora-alliance.org",
+  "difficulty": 2,
+  "routing_scheme": "source-routed",
+  "tx_power_dbm_typical": 14
+}

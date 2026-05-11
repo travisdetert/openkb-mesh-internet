@@ -1,0 +1,12 @@
+{
+  "Name": "Update Type",
+  "Slug": "update_type",
+  "Description": "The semantic class of an update — what kind of information it carries.",
+  "Icon": "tag",
+  "Active": true,
+  "Category": "Information",
+  "Attributes": [
+    { "Name": "Name",    "Slug": "name",    "Type": "String", "Required": true },
+    { "Name": "Summary", "Slug": "summary", "Type": "Text" }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "Name": "Routing Scheme",
+  "Slug": "routing_scheme",
+  "Description": "How a protocol composes hops into a multi-hop path. Determines latency, reliability, and overhead per hop.",
+  "Icon": "network",
+  "Active": true,
+  "Category": "Networking",
+  "Attributes": [
+    { "Name": "Name",                       "Slug": "name",                          "Type": "String", "Required": true },
+    { "Name": "Family",                     "Slug": "family",                        "Type": "String", "Description": "reactive | proactive | hybrid | flooding | gossip" },
+    { "Name": "Hop Latency (ms)",           "Slug": "hop_latency_ms_typical",        "Type": "Number" },
+    { "Name": "Hop Loss Probability",       "Slug": "hop_loss_probability_typical",  "Type": "Number", "Description": "0..1, packet drop per hop in good conditions" },
+    { "Name": "Max Practical Hops",         "Slug": "max_practical_hops",            "Type": "Number" },
+    { "Name": "Route Discovery Cost (hops)","Slug": "route_discovery_cost_hops",     "Type": "Number", "Description": "Extra hops worth of overhead before first packet flows (reactive only)" },
+    { "Name": "Retransmits On Loss",        "Slug": "retransmits_on_loss",           "Type": "Number" },
+    { "Name": "Failure Mode",               "Slug": "failure_mode",                  "Type": "Text" },
+    { "Name": "Summary",                    "Slug": "summary",                       "Type": "Text" }
+  ]
+}

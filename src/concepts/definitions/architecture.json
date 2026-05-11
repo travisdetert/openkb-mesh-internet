@@ -1,0 +1,29 @@
+{
+  "Name": "Internet Architecture",
+  "Slug": "architecture",
+  "Description": "A way of organizing the internet — who holds state, how routing works, what the wire carries. Different architectures pay different bytes for the same user-visible interaction.",
+  "Icon": "globe-network",
+  "Active": true,
+  "Category": "Networking",
+  "Attributes": [
+    { "Name": "Name",                          "Slug": "name",                       "Type": "String", "Required": true },
+    { "Name": "Identity Model",                "Slug": "identity_model",             "Type": "String", "Description": "DNS-name | public-key | content-hash | URL" },
+    { "Name": "Routing Primitive",             "Slug": "routing_primitive",          "Type": "String", "Description": "address | name | topic | label-stack" },
+    { "Name": "State Location",                "Slug": "state_location",             "Type": "String", "Description": "central-server | edge-replica | every-peer | content-cache" },
+    { "Name": "Default Wire Format",           "Slug": "wire_format",                "Type": "String", "Description": "JSON-over-HTTP | protobuf | CBOR | TLV | HTML" },
+    { "Name": "Caching Strategy",              "Slug": "caching_strategy",           "Type": "String", "Description": "none | client-only | edge-CDN | in-network | content-addressed" },
+    { "Name": "Encryption Granularity",        "Slug": "encryption_granularity",     "Type": "String", "Description": "TLS-per-connection | per-recipient | per-group | per-object | none" },
+    { "Name": "Discovery Mechanism",           "Slug": "discovery_mechanism",        "Type": "Text" },
+    { "Name": "Interaction Model",             "Slug": "interaction_model",          "Type": "String", "Description": "request-response | pub-sub | gossip | pull-by-name | event-sourced" },
+    { "Name": "Bytes per chat message",        "Slug": "bytes_chat_message",         "Type": "Number", "Description": "Typical wire cost of one short chat (40-byte payload)" },
+    { "Name": "Bytes per sensor reading",      "Slug": "bytes_sensor_reading",       "Type": "Number", "Description": "Typical wire cost of one telemetry sample (12-byte payload)" },
+    { "Name": "Bytes per page view",           "Slug": "bytes_page_view",            "Type": "Number", "Description": "Typical wire cost of one 'view a feed' interaction" },
+    { "Name": "Wire Overhead Ratio",           "Slug": "wire_overhead_ratio",        "Type": "Number", "Description": "Total wire bytes / payload bytes for the chat message case" },
+    { "Name": "Survives Partition",            "Slug": "survives_partition",         "Type": "Boolean", "Description": "Can two halves still communicate within their half?" },
+    { "Name": "Survives Server Loss",          "Slug": "survives_server_loss",       "Type": "Boolean" },
+    { "Name": "Allows Anonymous Read",         "Slug": "allows_anonymous_read",      "Type": "Boolean" },
+    { "Name": "Strengths",                     "Slug": "strengths",                  "Type": "Text" },
+    { "Name": "Tradeoffs",                     "Slug": "tradeoffs",                  "Type": "Text" },
+    { "Name": "Real-world Examples",           "Slug": "real_world_examples",        "Type": "Text" }
+  ]
+}

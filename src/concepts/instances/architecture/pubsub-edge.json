@@ -1,0 +1,22 @@
+{
+  "ID": "pubsub-edge",
+  "name": "Pub/Sub Edge (MQTT/NATS-style)",
+  "identity_model": "DNS-name",
+  "routing_primitive": "topic",
+  "state_location": "edge-replica",
+  "wire_format": "CBOR",
+  "caching_strategy": "client-only",
+  "encryption_granularity": "TLS-per-connection",
+  "discovery_mechanism": "Topic catalog at the broker",
+  "interaction_model": "pub-sub",
+  "bytes_chat_message": 80,
+  "bytes_sensor_reading": 24,
+  "bytes_page_view": 4000,
+  "wire_overhead_ratio": 2,
+  "survives_partition": false,
+  "survives_server_loss": false,
+  "allows_anonymous_read": false,
+  "strengths": "No polling — events arrive when they happen. Tiny per-event overhead. One TCP connection carries thousands of topic subscriptions. Already the dominant pattern for IoT and finance.",
+  "tradeoffs": "Broker is a single point of failure (federate to fix). Subscribers are stateful — broker tracks who wants what. No native partition tolerance.",
+  "real_world_examples": "MQTT for IoT (AWS IoT Core, Mosquitto). NATS at fintech. Server-sent events on news sites. WebSockets in chat apps."
+}

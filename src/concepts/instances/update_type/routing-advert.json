@@ -1,0 +1,5 @@
+{
+  "ID": "routing-advert",
+  "name": "Routing Advert",
+  "summary": "Topology gossip. Who I can reach, with what cost. Proactive routing eats steady airtime; reactive routing only emits these on demand."
+}

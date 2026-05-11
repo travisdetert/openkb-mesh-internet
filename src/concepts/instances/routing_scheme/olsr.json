@@ -1,0 +1,12 @@
+{
+  "ID": "olsr",
+  "name": "OLSR / B.A.T.M.A.N. (proactive)",
+  "family": "proactive",
+  "hop_latency_ms_typical": 30,
+  "hop_loss_probability_typical": 0.03,
+  "max_practical_hops": 12,
+  "route_discovery_cost_hops": 0,
+  "retransmits_on_loss": 1,
+  "failure_mode": "Background advert traffic eats steady airtime. If a hop dies, traffic uses a stale route until the next OGM (originator message) cycle.",
+  "summary": "Every node periodically advertises what it can reach. Routes are always pre-computed — no first-packet delay. Pays a constant airtime tax for that. Common on Wi-Fi mesh."
+}

@@ -1,0 +1,11 @@
+{
+  "ID": "meshtastic-text",
+  "name": "Meshtastic / Text Message",
+  "update": "text-message",
+  "protocol": "meshtastic",
+  "encoding": "protobuf (MeshPacket + Data + payload)",
+  "header_bytes": 16,
+  "payload_bytes": 42,
+  "total_bytes": 58,
+  "notes": "MeshPacket header (~16B: from/to/id/channel/hop/want_ack/flags) + Data envelope (~2B: portnum tag) + UTF-8 text. Encrypted as a unit with the channel PSK."
+}

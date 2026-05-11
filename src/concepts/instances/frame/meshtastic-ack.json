@@ -1,0 +1,11 @@
+{
+  "ID": "meshtastic-ack",
+  "name": "Meshtastic / Ack",
+  "update": "ack-packet",
+  "protocol": "meshtastic",
+  "encoding": "protobuf (MeshPacket + Routing.Ack)",
+  "header_bytes": 16,
+  "payload_bytes": 6,
+  "total_bytes": 22,
+  "notes": "Routing { error_reason, ack_id }. Triggered only when sender set want_ack."
+}

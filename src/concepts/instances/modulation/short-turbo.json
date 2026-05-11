@@ -1,0 +1,14 @@
+{
+  "ID": "ShortTurbo",
+  "name": "Short Turbo",
+  "label": "Short Turbo (500 kHz)",
+  "scheme": "CSS",
+  "sf": 7,
+  "bw": 500000,
+  "cr": 5,
+  "sensitivity_dbm": -123,
+  "bitrate_bps": 21900,
+  "airtime_sec_50byte": 0.07,
+  "default_range": "short",
+  "notes": "Fastest, shortest range. Wide channel illegal in EU868. Good for dense urban meshes with low range needs."
+}

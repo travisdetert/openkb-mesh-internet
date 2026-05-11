@@ -1,0 +1,15 @@
+{
+  "ID": "fractal-pcb",
+  "name": "Fractal/PCB chip antenna",
+  "type": "fractal",
+  "gain_dbi": -2,
+  "vswr": "~2.0",
+  "form_factor": "on-board",
+  "price_usd_low": 0,
+  "price_usd_high": 0,
+  "connector": "integrated",
+  "polarization": "vertical",
+  "bands": ["*"],
+  "best_for": "Tiny trackers (T1000-E). Acceptable when size matters more than range.",
+  "watch_out": "Can be 5–10 dB worse than a real external antenna. Range will be a fraction of stock duck."
+}

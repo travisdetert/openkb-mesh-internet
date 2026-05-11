@@ -1,0 +1,21 @@
+{
+  "Name": "Modulation Preset",
+  "Slug": "modulation",
+  "Description": "A specific modulation/coding configuration — bandwidth, spreading factor, coding rate — that defines the airtime/range/throughput tradeoff for a physical layer.",
+  "Icon": "wave",
+  "Active": true,
+  "Category": "Physical Layer",
+  "Attributes": [
+    { "Name": "Name",                "Slug": "name",                 "Type": "String",  "Required": true },
+    { "Name": "Label",               "Slug": "label",                "Type": "String" },
+    { "Name": "Scheme",              "Slug": "scheme",               "Type": "String",  "Description": "CSS | OFDM | FSK | GFSK | DSSS | QPSK" },
+    { "Name": "Spreading Factor",    "Slug": "sf",                   "Type": "Number",  "Description": "LoRa: bits per symbol = SF" },
+    { "Name": "Bandwidth (Hz)",      "Slug": "bw",                   "Type": "Number" },
+    { "Name": "Coding Rate (4/n)",   "Slug": "cr",                   "Type": "Number",  "Description": "Denominator of 4/n FEC" },
+    { "Name": "Sensitivity (dBm)",   "Slug": "sensitivity_dbm",      "Type": "Number" },
+    { "Name": "Bitrate (bps)",       "Slug": "bitrate_bps",          "Type": "Number" },
+    { "Name": "Airtime — 50 byte (s)", "Slug": "airtime_sec_50byte", "Type": "Number" },
+    { "Name": "Default Range Tier",  "Slug": "default_range",        "Type": "String",  "Description": "short | medium | long" },
+    { "Name": "Notes",               "Slug": "notes",                "Type": "Text" }
+  ]
+}

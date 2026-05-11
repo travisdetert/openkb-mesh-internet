@@ -1,0 +1,18 @@
+{
+  "Name": "Subscription",
+  "Slug": "subscription",
+  "Description": "A standing declaration of interest — 'send me events on this Topic, of these Types.' The unit of pub/sub.",
+  "Icon": "bell",
+  "Active": true,
+  "Category": "Information",
+  "Attributes": [
+    { "Name": "Name",                       "Slug": "name",                       "Type": "String", "Required": true },
+    { "Name": "Topic Filter",               "Slug": "topic_filter",               "Type": "Reference", "ReferenceConcept": "topic" },
+    { "Name": "Event Types",                "Slug": "event_types",                "Type": "Reference", "ReferenceConcept": "update_type", "Collection": true },
+    { "Name": "Max Staleness (sec)",        "Slug": "max_staleness_sec",        "Type": "Number", "Description": "If no event in this window, request a snapshot" },
+    { "Name": "Wire Bytes / Event",         "Slug": "wire_bytes_per_event",       "Type": "Number" },
+    { "Name": "Wire Bytes / Subscription",  "Slug": "wire_bytes_subscribe",       "Type": "Number", "Description": "The 'I'm interested' message itself" },
+    { "Name": "Delivery",                   "Slug": "delivery",                   "Type": "String", "Description": "at-most-once | at-least-once | exactly-once" },
+    { "Name": "Summary",                    "Slug": "summary",                    "Type": "Text" }
+  ]
+}

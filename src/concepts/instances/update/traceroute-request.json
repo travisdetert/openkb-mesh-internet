@@ -1,0 +1,17 @@
+{
+  "ID": "traceroute-request",
+  "name": "Traceroute Request",
+  "type": "traceroute",
+  "topic": "peer-direct",
+  "payload_bytes_typical": 8,
+  "payload_bytes_max": 64,
+  "frequency_hz": 0,
+  "ttl_sec": 60,
+  "priority": 4,
+  "idempotent": true,
+  "requires_ack": true,
+  "reach": "unicast-routed",
+  "encoding_shape": "query",
+  "restates_if_missed": false,
+  "summary": "User-initiated probe — each hop appends its id, reply carries the path back."
+}

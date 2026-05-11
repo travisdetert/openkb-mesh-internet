@@ -1,0 +1,5 @@
+{
+  "ID": "presence",
+  "name": "Presence",
+  "summary": "I'm here. Periodic broadcast that announces a node exists, plus minimal identity (id, role, hw model)."
+}

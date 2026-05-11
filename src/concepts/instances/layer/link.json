@@ -1,0 +1,6 @@
+{
+  "ID": "link",
+  "name": "Link",
+  "osi_level": 2,
+  "summary": "Frames, addressing within a single hop, channel access (CSMA, TDMA, ALOHA), error checking."
+}

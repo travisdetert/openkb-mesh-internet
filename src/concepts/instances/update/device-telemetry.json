@@ -1,0 +1,17 @@
+{
+  "ID": "device-telemetry",
+  "name": "Device Telemetry",
+  "type": "telemetry",
+  "topic": "node-self",
+  "payload_bytes_typical": 16,
+  "payload_bytes_max": 48,
+  "frequency_hz": 0.00056,
+  "ttl_sec": 1800,
+  "priority": 0,
+  "idempotent": true,
+  "requires_ack": false,
+  "reach": "broadcast",
+  "encoding_shape": "snapshot",
+  "restates_if_missed": true,
+  "summary": "Battery %, voltage, channel utilization, air-tx %. Once every 30 min on a stock Meshtastic node. Each one fully overwrites the prior — perfect candidate for a delta encoding that almost no protocol bothers with."
+}

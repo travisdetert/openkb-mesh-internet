@@ -1,0 +1,16 @@
+{
+  "ID": "log-periodic",
+  "name": "Log-periodic dipole (~7 dBi)",
+  "type": "directional",
+  "gain_dbi": 7,
+  "beamwidth_deg": 80,
+  "vswr": "<1.5",
+  "form_factor": "~50 cm",
+  "price_usd_low": 40,
+  "price_usd_high": 90,
+  "connector": "n-male",
+  "polarization": "linear-mountable",
+  "bands": ["*"],
+  "best_for": "Wide-band directional — works across 400–1000 MHz, no retuning between regions.",
+  "watch_out": "Lower gain than a same-size Yagi at a single frequency."
+}

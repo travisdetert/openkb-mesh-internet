@@ -1,0 +1,20 @@
+{
+  "ID": "meshtastic",
+  "name": "Meshtastic",
+  "family": "LoRa",
+  "layers": ["phy", "link", "network", "application"],
+  "modulations": ["ShortFast", "ShortSlow", "MedFast", "MedSlow", "LongFast", "LongMod", "LongSlow"],
+  "transport": "RF (sub-GHz ISM)",
+  "max_payload": 237,
+  "typical_range_km": 5,
+  "encryption": "AES-256-CTR per channel (PSK)",
+  "governance": "Open spec, community-led; firmware MIT/GPL",
+  "open_source": true,
+  "summary": "Cheap LoRa nodes that forward short text + telemetry hop-by-hop with managed flooding. No infra, no internet.",
+  "why": "Small group/off-grid messaging in places where there's no cell service and you don't want to depend on it.",
+  "tradeoffs": "Tiny throughput (~0.2–11 kbps), shared single-channel airtime, anyone with the PSK reads everything on a channel.",
+  "reference_url": "https://meshtastic.org",
+  "difficulty": 1,
+  "routing_scheme": "managed-flood",
+  "tx_power_dbm_typical": 20
+}

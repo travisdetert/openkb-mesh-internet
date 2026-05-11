@@ -1,0 +1,5 @@
+{
+  "ID": "telemetry",
+  "name": "Telemetry",
+  "summary": "How I'm doing. Battery, voltage, channel utilization, sensor readings. Often the highest-volume update type on a healthy mesh."
+}

@@ -1,0 +1,11 @@
+{
+  "ID": "meshtastic-traceroute",
+  "name": "Meshtastic / Traceroute",
+  "update": "traceroute-request",
+  "protocol": "meshtastic",
+  "encoding": "protobuf (MeshPacket + RouteDiscovery)",
+  "header_bytes": 16,
+  "payload_bytes": 12,
+  "total_bytes": 28,
+  "notes": "RouteDiscovery { route: repeated fixed32 }. Grows by 4 bytes per hop traversed."
+}

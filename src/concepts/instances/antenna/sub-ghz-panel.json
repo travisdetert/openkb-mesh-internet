@@ -1,0 +1,16 @@
+{
+  "ID": "sub-ghz-panel",
+  "name": "Sub-GHz panel / patch (~8 dBi)",
+  "type": "directional",
+  "gain_dbi": 8,
+  "beamwidth_deg": 70,
+  "vswr": "<1.5",
+  "form_factor": "~25 × 25 cm flat panel",
+  "price_usd_low": 40,
+  "price_usd_high": 100,
+  "connector": "n-male",
+  "polarization": "vertical",
+  "bands": ["US", "EU868", "JP", "AU"],
+  "best_for": "Weatherproof fixed point-to-point links. Lower visual profile than a Yagi, mounts flat to a wall.",
+  "watch_out": "Polarization is fixed by how you mount it — get it wrong and you lose 20 dB silently."
+}

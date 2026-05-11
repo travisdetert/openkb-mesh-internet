@@ -1,0 +1,11 @@
+{
+  "ID": "chat-channel",
+  "name": "Chat channel subscription",
+  "topic_filter": "channel-default",
+  "event_types": ["message", "ack"],
+  "max_staleness_sec": 0,
+  "wire_bytes_per_event": 60,
+  "wire_bytes_subscribe": 24,
+  "delivery": "at-least-once",
+  "summary": "Receive every chat message on a channel as it happens. Subscriber pays a one-time subscribe cost; per-message cost is just the payload."
+}

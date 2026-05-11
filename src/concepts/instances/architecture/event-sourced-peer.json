@@ -1,0 +1,22 @@
+{
+  "ID": "event-sourced-peer",
+  "name": "Event-sourced Peer (CRDT / Scuttlebutt)",
+  "identity_model": "public-key",
+  "routing_primitive": "address",
+  "state_location": "every-peer",
+  "wire_format": "CBOR",
+  "caching_strategy": "in-network",
+  "encryption_granularity": "per-recipient",
+  "discovery_mechanism": "Gossip from known peers; no central directory",
+  "interaction_model": "event-sourced",
+  "bytes_chat_message": 200,
+  "bytes_sensor_reading": 60,
+  "bytes_page_view": 0,
+  "wire_overhead_ratio": 5,
+  "survives_partition": true,
+  "survives_server_loss": true,
+  "allows_anonymous_read": false,
+  "strengths": "Works offline. Two halves of a partition keep functioning and reconcile when they meet. No server to take down or compromise. Identity is cryptographically self-validating.",
+  "tradeoffs": "Logs grow forever — needs compaction. Discovery is hard without central directories. Per-recipient encryption defeats cache sharing. Eventual consistency isn't always what users expect ('why didn't my message show up yet?').",
+  "real_world_examples": "Scuttlebutt (SSB). Briar. Yjs/Automerge for collaborative editing. Matrix federation. git itself."
+}

@@ -1,0 +1,12 @@
+{
+  "ID": "spanning-tree",
+  "name": "Spanning Tree (Yggdrasil)",
+  "family": "proactive",
+  "hop_latency_ms_typical": 8,
+  "hop_loss_probability_typical": 0.02,
+  "max_practical_hops": 30,
+  "route_discovery_cost_hops": 0,
+  "retransmits_on_loss": 1,
+  "failure_mode": "Tree reconvergence on root failure costs seconds globally. Routes are always tree-paths — not always shortest, sometimes wildly suboptimal.",
+  "summary": "Nodes elect a root, build a spanning tree, derive coordinates from tree position. Routing is 'walk the tree.' Scales to thousands of nodes; trades optimal routes for predictable convergence."
+}

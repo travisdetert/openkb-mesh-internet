@@ -1,0 +1,14 @@
+{
+  "ID": "LongFast",
+  "name": "Long Fast",
+  "label": "Long Fast (default)",
+  "scheme": "CSS",
+  "sf": 11,
+  "bw": 250000,
+  "cr": 5,
+  "sensitivity_dbm": -137,
+  "bitrate_bps": 1070,
+  "airtime_sec_50byte": 1.0,
+  "default_range": "long",
+  "notes": "Meshtastic global default. Wide reach, modest throughput."
+}

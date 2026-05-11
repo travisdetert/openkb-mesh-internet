@@ -1,0 +1,13 @@
+{
+  "ID": "indoor",
+  "name": "Indoor",
+  "path_loss_exponent": 4.5,
+  "ref_distance_m": 1,
+  "ref_path_loss_db": 31.5,
+  "shadow_fading_sigma_db": 6,
+  "noise_floor_dbm": -100,
+  "line_of_sight": false,
+  "multipath_fading": "Rayleigh",
+  "summary": "Walls, furniture, people. Each interior wall costs ~3–6 dB; concrete or foil-backed insulation can cost 20+. Antenna height matters less; what's between you and the peer matters more.",
+  "real_world_examples": "Across an office building. Apartment to apartment in the same complex. Garage-to-kitchen."
+}

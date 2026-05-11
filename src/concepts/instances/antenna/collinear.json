@@ -1,0 +1,15 @@
+{
+  "ID": "collinear",
+  "name": "Collinear omni (~8 dBi)",
+  "type": "omni",
+  "gain_dbi": 8,
+  "vswr": "<1.5",
+  "form_factor": "~2 m vertical",
+  "price_usd_low": 60,
+  "price_usd_high": 150,
+  "connector": "n-male",
+  "polarization": "vertical",
+  "bands": ["US", "EU868", "JP", "AU"],
+  "best_for": "Repeater nodes. Highest practical omnidirectional gain.",
+  "watch_out": "Squashes the radiation pattern flat — bad if neighbors are above or below your elevation. Big and visible."
+}

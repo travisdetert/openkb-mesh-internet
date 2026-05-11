@@ -1,0 +1,11 @@
+{
+  "ID": "sensor-stream",
+  "name": "Sensor reading stream",
+  "topic_filter": "sensor-readings",
+  "event_types": ["telemetry"],
+  "max_staleness_sec": 600,
+  "wire_bytes_per_event": 40,
+  "wire_bytes_subscribe": 20,
+  "delivery": "at-least-once",
+  "summary": "Subscribe by class of sensor, not by node id. Aggregators get readings from any contributing node automatically."
+}

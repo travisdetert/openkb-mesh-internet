@@ -1,0 +1,20 @@
+{
+  "ID": "briar",
+  "name": "Briar",
+  "family": "BLE",
+  "layers": ["application"],
+  "modulations": [],
+  "transport": "Tor / Bluetooth / Wi-Fi direct",
+  "max_payload": 32768,
+  "typical_range_km": 0.05,
+  "encryption": "BTP (Bramble Transport Protocol), Curve25519 + ChaCha20",
+  "governance": "Briar Project, open source",
+  "open_source": true,
+  "summary": "Peer-to-peer secure messaging that works over Tor, local Bluetooth, or Wi-Fi — no central server.",
+  "why": "Private chat that survives censorship and infrastructure outages — designed for activists and disaster response.",
+  "tradeoffs": "Mobile-only. Bluetooth/Wi-Fi requires physical proximity. Tor mode requires internet.",
+  "reference_url": "https://briarproject.org",
+  "difficulty": 2,
+  "routing_scheme": "aodv",
+  "tx_power_dbm_typical": 4
+}

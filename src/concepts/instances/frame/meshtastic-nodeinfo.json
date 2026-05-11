@@ -1,0 +1,11 @@
+{
+  "ID": "meshtastic-nodeinfo",
+  "name": "Meshtastic / Node Info",
+  "update": "nodeinfo",
+  "protocol": "meshtastic",
+  "encoding": "protobuf (MeshPacket + User)",
+  "header_bytes": 16,
+  "payload_bytes": 36,
+  "total_bytes": 52,
+  "notes": "id (string ~10B), long_name (~16B), short_name (~4B), macaddr (6B), hw_model (varint)."
+}

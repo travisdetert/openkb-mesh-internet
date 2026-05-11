@@ -1,0 +1,14 @@
+{
+  "Name": "Topic",
+  "Slug": "topic",
+  "Description": "What an update is about — a node, a channel, a sensor, a position. Subscribers route by topic.",
+  "Icon": "rss",
+  "Active": true,
+  "Category": "Information",
+  "Attributes": [
+    { "Name": "Name",     "Slug": "name",      "Type": "String", "Required": true },
+    { "Name": "Kind",     "Slug": "kind",      "Type": "String", "Description": "node | channel | sensor | position | mesh-wide | service" },
+    { "Name": "Selector", "Slug": "selector",  "Type": "String", "Description": "How to address it — a node id, a channel name, a sensor type" },
+    { "Name": "Summary",  "Slug": "summary",   "Type": "Text" }
+  ]
+}

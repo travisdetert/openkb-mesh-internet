@@ -1,0 +1,5 @@
+{
+  "ID": "traceroute",
+  "name": "Traceroute",
+  "summary": "Map the path. Each hop appends its id; reply carries the full path back. Single best diagnostic on a mesh."
+}

@@ -1,0 +1,11 @@
+{
+  "ID": "peer-direct-msgs",
+  "name": "Direct messages from a peer",
+  "topic_filter": "peer-direct",
+  "event_types": ["message", "ack"],
+  "max_staleness_sec": 0,
+  "wire_bytes_per_event": 80,
+  "wire_bytes_subscribe": 32,
+  "delivery": "exactly-once",
+  "summary": "Reliable, encrypted, ordered delivery of unicast messages from one peer. The cost of strong delivery semantics."
+}

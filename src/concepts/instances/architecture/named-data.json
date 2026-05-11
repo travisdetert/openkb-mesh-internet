@@ -1,0 +1,22 @@
+{
+  "ID": "named-data",
+  "name": "Named Data (NDN / content-addressed)",
+  "identity_model": "content-hash",
+  "routing_primitive": "name",
+  "state_location": "content-cache",
+  "wire_format": "TLV",
+  "caching_strategy": "content-addressed",
+  "encryption_granularity": "per-object",
+  "discovery_mechanism": "Hierarchical name routing; pull-by-prefix",
+  "interaction_model": "pull-by-name",
+  "bytes_chat_message": 240,
+  "bytes_sensor_reading": 80,
+  "bytes_page_view": 1200,
+  "wire_overhead_ratio": 6,
+  "survives_partition": true,
+  "survives_server_loss": true,
+  "allows_anonymous_read": true,
+  "strengths": "Same name asked twice = one network traversal. Routers cache automatically. Built-in multicast — popular content gets faster as it's accessed. Origin failure doesn't break access to already-published data.",
+  "tradeoffs": "Per-recipient encryption fights caching (pick group encryption or no caching). Dynamic content needs synthetic names. Authentication is per-object, not per-channel — every object signed. Routing tables grow with name space.",
+  "real_world_examples": "NDN (UCLA, named-data.net). CCN/CCNx. IPFS in spirit. BitTorrent. Production content distribution networks like Cloudflare implement subsets."
+}

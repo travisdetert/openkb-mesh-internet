@@ -1,0 +1,14 @@
+{
+  "ID": "MedSlow",
+  "name": "Medium Slow",
+  "label": "Medium Slow",
+  "scheme": "CSS",
+  "sf": 10,
+  "bw": 250000,
+  "cr": 5,
+  "sensitivity_dbm": -135,
+  "bitrate_bps": 1950,
+  "airtime_sec_50byte": 0.55,
+  "default_range": "medium",
+  "notes": "Suburban range, half the bitrate of MedFast."
+}

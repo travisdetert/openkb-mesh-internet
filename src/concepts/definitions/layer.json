@@ -1,0 +1,13 @@
+{
+  "Name": "Network Layer",
+  "Slug": "layer",
+  "Description": "An OSI-style layer that protocols implement or span. Used to position a protocol in the stack.",
+  "Icon": "layers",
+  "Active": true,
+  "Category": "Networking",
+  "Attributes": [
+    { "Name": "Name",      "Slug": "name",       "Type": "String", "Required": true },
+    { "Name": "OSI Level", "Slug": "osi_level",  "Type": "Number", "Description": "1=PHY, 2=Link, 3=Network, 4=Transport, 5=Session, 6=Presentation, 7=Application" },
+    { "Name": "Summary",   "Slug": "summary",    "Type": "Text" }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "ID": "cjdns",
+  "name": "cjdns",
+  "family": "IP",
+  "layers": ["network", "transport"],
+  "modulations": [],
+  "transport": "IP-over-X (UDP, Ethernet, anything)",
+  "max_payload": 65535,
+  "typical_range_km": 0,
+  "encryption": "Curve25519 + Salsa20 per-link, IPv6 derived from public key",
+  "governance": "Open source, small core team (Hyperboria community)",
+  "open_source": true,
+  "summary": "Encrypted IPv6 mesh where addresses are hashes of public keys. Source-routed labels, not flat IP.",
+  "why": "Demonstrate an internet where addressing is cryptographically self-validating — no CAs, no hijack risk.",
+  "tradeoffs": "Niche. Source routing limits scale. Maintenance has been spotty.",
+  "reference_url": "https://github.com/cjdelisle/cjdns",
+  "difficulty": 4,
+  "routing_scheme": "source-routed",
+  "tx_power_dbm_typical": 0
+}

@@ -1,0 +1,5 @@
+{
+  "ID": "ack",
+  "name": "Acknowledgment",
+  "summary": "Got it. Confirms a specific packet was received. The cost of reliability — every ack is another packet on the wire."
+}

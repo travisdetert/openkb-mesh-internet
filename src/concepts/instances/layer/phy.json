@@ -1,0 +1,6 @@
+{
+  "ID": "phy",
+  "name": "Physical",
+  "osi_level": 1,
+  "summary": "Bits to electromagnetic waves and back. Modulation, frequency, power, antennas live here."
+}

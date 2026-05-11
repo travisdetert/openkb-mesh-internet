@@ -1,0 +1,7 @@
+{
+  "ID": "mesh-wide",
+  "name": "Whole mesh",
+  "kind": "mesh-wide",
+  "selector": "*",
+  "summary": "Broadcast — every node forwards. Routing adverts and presence often live here."
+}

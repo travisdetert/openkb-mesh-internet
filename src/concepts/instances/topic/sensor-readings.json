@@ -1,0 +1,7 @@
+{
+  "ID": "sensor-readings",
+  "name": "Sensor stream",
+  "kind": "sensor",
+  "selector": "kind",
+  "summary": "Subscribers interested in a class of measurement (temperature, air-quality, etc.) regardless of which node emits."
+}

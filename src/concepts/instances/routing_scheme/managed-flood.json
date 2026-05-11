@@ -1,0 +1,12 @@
+{
+  "ID": "managed-flood",
+  "name": "Managed Flooding",
+  "family": "flooding",
+  "hop_latency_ms_typical": 600,
+  "hop_loss_probability_typical": 0.08,
+  "max_practical_hops": 7,
+  "route_discovery_cost_hops": 0,
+  "retransmits_on_loss": 0,
+  "failure_mode": "Hop drops silently → next packet floods another path. Duplicate suppression keeps the flood bounded but every relay still pays airtime.",
+  "summary": "Every receiver re-broadcasts once, jittered, with a hop-limit decrement. No routing tables. Robust to topology change but quadratic in airtime cost vs hop count. Meshtastic's default."
+}

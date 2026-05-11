@@ -1,0 +1,11 @@
+{
+  "ID": "meshtastic-device-telemetry",
+  "name": "Meshtastic / Device Telemetry",
+  "update": "device-telemetry",
+  "protocol": "meshtastic",
+  "encoding": "protobuf (MeshPacket + Telemetry.DeviceMetrics)",
+  "header_bytes": 16,
+  "payload_bytes": 18,
+  "total_bytes": 34,
+  "notes": "battery_level (uint32), voltage (float), channel_utilization (float), air_util_tx (float), uptime_seconds (uint32)."
+}

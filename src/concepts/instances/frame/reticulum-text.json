@@ -1,0 +1,11 @@
+{
+  "ID": "reticulum-text",
+  "name": "Reticulum / Text Message",
+  "update": "text-message",
+  "protocol": "reticulum",
+  "encoding": "RNS Packet (32B destination hash + 32B context + payload)",
+  "header_bytes": 70,
+  "payload_bytes": 40,
+  "total_bytes": 110,
+  "notes": "Bigger header — destination is a full 32B hash, plus per-hop encryption context. The cost of being self-addressed without a directory."
+}

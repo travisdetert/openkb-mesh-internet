@@ -1,0 +1,20 @@
+{
+  "ID": "yggdrasil",
+  "name": "Yggdrasil",
+  "family": "IP",
+  "layers": ["network", "transport", "application"],
+  "modulations": [],
+  "transport": "IP-over-X (any L2 with peering)",
+  "max_payload": 65535,
+  "typical_range_km": 0,
+  "encryption": "Ed25519 keys, end-to-end ChaCha20-Poly1305",
+  "governance": "Open spec, small core team",
+  "open_source": true,
+  "summary": "End-to-end encrypted IPv6 overlay. Spanning-tree routing across a global mesh of peers.",
+  "why": "Give every device a stable, cryptographically-bound IPv6 that works regardless of NAT, ISP, or location.",
+  "tradeoffs": "Requires a peer to bootstrap. Spanning-tree routes are not always shortest. IPv6-only.",
+  "reference_url": "https://yggdrasil-network.github.io",
+  "difficulty": 3,
+  "routing_scheme": "spanning-tree",
+  "tx_power_dbm_typical": 0
+}

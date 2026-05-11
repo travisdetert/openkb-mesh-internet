@@ -1,0 +1,17 @@
+{
+  "ID": "ack-packet",
+  "name": "Acknowledgment",
+  "type": "ack",
+  "topic": "peer-direct",
+  "payload_bytes_typical": 4,
+  "payload_bytes_max": 16,
+  "frequency_hz": 0,
+  "ttl_sec": 30,
+  "priority": 4,
+  "idempotent": true,
+  "requires_ack": false,
+  "reach": "unicast-routed",
+  "encoding_shape": "event",
+  "restates_if_missed": false,
+  "summary": "Tiny — just packet id + status. Sent only when the original Update set requires_ack."
+}

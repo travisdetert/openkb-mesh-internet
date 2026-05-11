@@ -1,0 +1,13 @@
+{
+  "ID": "suburban",
+  "name": "Suburban",
+  "path_loss_exponent": 3.5,
+  "ref_distance_m": 1,
+  "ref_path_loss_db": 31.5,
+  "shadow_fading_sigma_db": 7,
+  "noise_floor_dbm": -105,
+  "line_of_sight": false,
+  "multipath_fading": "Rician",
+  "summary": "Detached houses, trees, occasional 2–3 story buildings. Diffraction and tree absorption dominate. Realistic backyard mesh case.",
+  "real_world_examples": "American single-family neighborhoods. Rooftop antenna to peers across the block."
+}

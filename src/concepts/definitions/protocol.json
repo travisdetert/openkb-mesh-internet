@@ -1,0 +1,28 @@
+{
+  "Name": "Mesh Protocol",
+  "Slug": "protocol",
+  "Description": "A protocol that nodes use to find each other and forward traffic across a mesh without central infrastructure.",
+  "Icon": "broadcast",
+  "Active": true,
+  "Category": "Networking",
+  "Attributes": [
+    { "Name": "Name",            "Slug": "name",          "Type": "String",  "Required": true },
+    { "Name": "Family",          "Slug": "family",        "Type": "String",  "Description": "LoRa | IP | BLE | Thread | Reticulum | Custom" },
+    { "Name": "Layers",          "Slug": "layers",        "Type": "Reference", "ReferenceConcept": "layer", "Collection": true, "Description": "OSI layers this protocol spans" },
+    { "Name": "Modulations",     "Slug": "modulations",   "Type": "Reference", "ReferenceConcept": "modulation", "Collection": true },
+    { "Name": "Transport",       "Slug": "transport",     "Type": "String",  "Description": "RF / Wired / BLE / IP-over-X" },
+    { "Name": "Max Payload",     "Slug": "max_payload",   "Type": "Number",  "Description": "Bytes per frame, application-visible" },
+    { "Name": "Typical Range",   "Slug": "typical_range_km", "Type": "Number" },
+    { "Name": "Encryption",      "Slug": "encryption",    "Type": "String",  "Description": "e.g. AES-256-CTR per channel, X25519+ChaCha20, none" },
+    { "Name": "Governance",      "Slug": "governance",    "Type": "String",  "Description": "Who controls the spec / network — open spec, single vendor, IETF, etc." },
+    { "Name": "Open Source",     "Slug": "open_source",   "Type": "Boolean" },
+    { "Name": "Summary",         "Slug": "summary",       "Type": "Text" },
+    { "Name": "Why It Exists",   "Slug": "why",           "Type": "Text",    "Description": "The problem the protocol was designed to solve" },
+    { "Name": "Tradeoffs",       "Slug": "tradeoffs",     "Type": "Text" },
+    { "Name": "Reference URL",   "Slug": "reference_url", "Type": "URL" },
+    { "Name": "Difficulty",      "Slug": "difficulty",    "Type": "Number",  "Description": "1=easy, 5=expert" },
+    { "Name": "Prerequisites",   "Slug": "prerequisites", "Type": "Reference", "ReferenceConcept": "protocol", "Collection": true },
+    { "Name": "Routing Scheme",  "Slug": "routing_scheme","Type": "Reference", "ReferenceConcept": "routing_scheme" },
+    { "Name": "Tx Power (dBm)",  "Slug": "tx_power_dbm_typical", "Type": "Number", "Description": "Typical transmit power for a stock device on this protocol" }
+  ]
+}

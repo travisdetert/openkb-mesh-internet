@@ -1,0 +1,16 @@
+{
+  "ID": "yagi-7el",
+  "name": "7-element Yagi (~12 dBi advertised, ~9–10 measured)",
+  "type": "directional",
+  "gain_dbi": 10,
+  "beamwidth_deg": 40,
+  "vswr": "<1.5",
+  "form_factor": "~1 m boom",
+  "price_usd_low": 60,
+  "price_usd_high": 130,
+  "connector": "n-male",
+  "polarization": "linear-mountable",
+  "bands": ["US", "EU868", "JP", "AU"],
+  "best_for": "Long-range point-to-point links: home-to-cabin, mountaintop relay.",
+  "watch_out": "Narrow beam means you only hear what you point at. Not for general meshing. Vendor gain claims tend to inflate by 2–3 dB."
+}

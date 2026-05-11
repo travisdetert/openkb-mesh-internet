@@ -1,0 +1,11 @@
+{
+  "ID": "lorawan-position",
+  "name": "LoRaWAN / Position",
+  "update": "position-beacon",
+  "protocol": "lorawan",
+  "encoding": "Cayenne LPP GPS (channel + type + 9B value)",
+  "header_bytes": 13,
+  "payload_bytes": 11,
+  "total_bytes": 24,
+  "notes": "LPP GPS encoding: lat (3B) + lon (3B) + alt (3B), each 0.0001° / 0.01 m. Roughly half the Meshtastic position cost — but no peer-to-peer reach."
+}

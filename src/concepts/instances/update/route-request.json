@@ -1,0 +1,17 @@
+{
+  "ID": "route-request",
+  "name": "Route Request (RREQ)",
+  "type": "discovery",
+  "topic": "mesh-wide",
+  "payload_bytes_typical": 24,
+  "payload_bytes_max": 64,
+  "frequency_hz": 0,
+  "ttl_sec": 30,
+  "priority": 3,
+  "idempotent": true,
+  "requires_ack": false,
+  "reach": "broadcast",
+  "encoding_shape": "query",
+  "restates_if_missed": false,
+  "summary": "AODV-style flood asking 'who can reach destination X?'. Reply (RREP) follows the reverse path."
+}

@@ -1,0 +1,22 @@
+{
+  "ID": "classical-web",
+  "name": "Classical Web (HTTP/JSON)",
+  "identity_model": "DNS-name",
+  "routing_primitive": "address",
+  "state_location": "central-server",
+  "wire_format": "JSON-over-HTTP",
+  "caching_strategy": "edge-CDN",
+  "encryption_granularity": "TLS-per-connection",
+  "discovery_mechanism": "DNS + search engines + hyperlinks",
+  "interaction_model": "request-response",
+  "bytes_chat_message": 1800,
+  "bytes_sensor_reading": 800,
+  "bytes_page_view": 2500000,
+  "wire_overhead_ratio": 45,
+  "survives_partition": false,
+  "survives_server_loss": false,
+  "allows_anonymous_read": true,
+  "strengths": "Universal tooling. Every device speaks it. Caching at the CDN works for static content. Loose coupling — clients and servers evolve independently.",
+  "tradeoffs": "Most bytes are restating things both sides already know — headers, cookies, framework boilerplate, repeated JSON keys. Server is a single point of failure. CDN cache helps GET but not authenticated reads. Polling is wasteful; long-poll and SSE are bolted on.",
+  "real_world_examples": "Every REST API. Every news site. Most SaaS. Slack, Twitter web, GitHub web."
+}

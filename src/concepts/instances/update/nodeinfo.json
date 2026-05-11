@@ -1,0 +1,17 @@
+{
+  "ID": "nodeinfo",
+  "name": "Node Info",
+  "type": "presence",
+  "topic": "mesh-wide",
+  "payload_bytes_typical": 30,
+  "payload_bytes_max": 80,
+  "frequency_hz": 0.00028,
+  "ttl_sec": 3600,
+  "priority": 1,
+  "idempotent": true,
+  "requires_ack": false,
+  "reach": "broadcast",
+  "encoding_shape": "snapshot",
+  "restates_if_missed": true,
+  "summary": "Long name + short name + macaddr + hw model. Sent infrequently — once an hour or on join. Almost never changes; a content-hash + cache-by-name model would eliminate ~99% of these on the wire."
+}

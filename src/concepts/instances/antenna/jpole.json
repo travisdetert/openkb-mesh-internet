@@ -1,0 +1,15 @@
+{
+  "ID": "jpole",
+  "name": "J-pole / slim-jim (~5 dBi)",
+  "type": "omni",
+  "gain_dbi": 5,
+  "vswr": "<1.5",
+  "form_factor": "~1.2 m wire/ladder line",
+  "price_usd_low": 10,
+  "price_usd_high": 30,
+  "connector": "bare-wire",
+  "polarization": "vertical",
+  "bands": ["US", "EU868", "EU433", "JP", "AU"],
+  "best_for": "DIY indoor/attic mount. Great cost/performance for fixed installations.",
+  "watch_out": "Needs careful tuning to your exact band (915 vs 868 MHz are different geometries)."
+}

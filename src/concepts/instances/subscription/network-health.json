@@ -1,0 +1,11 @@
+{
+  "ID": "network-health",
+  "name": "Network health (operator view)",
+  "topic_filter": "mesh-wide",
+  "event_types": ["telemetry", "routing-advert"],
+  "max_staleness_sec": 300,
+  "wire_bytes_per_event": 50,
+  "wire_bytes_subscribe": 24,
+  "delivery": "at-most-once",
+  "summary": "What an operator dashboard needs — channel utilization, link state, who's reachable. Lossy delivery is fine; freshness matters."
+}

@@ -1,0 +1,14 @@
+{
+  "ID": "LongMod",
+  "name": "Long Moderate",
+  "label": "Long Moderate",
+  "scheme": "CSS",
+  "sf": 11,
+  "bw": 125000,
+  "cr": 8,
+  "sensitivity_dbm": -140,
+  "bitrate_bps": 336,
+  "airtime_sec_50byte": 3.2,
+  "default_range": "long",
+  "notes": "Halve BW for +3 dB, then max coding rate for FEC. Slow but reliable."
+}

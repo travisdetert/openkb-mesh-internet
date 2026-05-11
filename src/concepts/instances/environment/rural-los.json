@@ -1,0 +1,13 @@
+{
+  "ID": "rural-los",
+  "name": "Rural with Line of Sight",
+  "path_loss_exponent": 2.3,
+  "ref_distance_m": 1,
+  "ref_path_loss_db": 31.5,
+  "shadow_fading_sigma_db": 4,
+  "noise_floor_dbm": -110,
+  "line_of_sight": true,
+  "multipath_fading": "negligible",
+  "summary": "Open countryside with a clear path between antennas. Modest excess loss from foliage and ground reflection. The cleanest realistic environment.",
+  "real_world_examples": "Hill-to-hill across farmland. Lake crossings. Open desert."
+}

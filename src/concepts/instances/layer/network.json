@@ -1,0 +1,6 @@
+{
+  "ID": "network",
+  "name": "Network",
+  "osi_level": 3,
+  "summary": "Multi-hop routing across the mesh — managed flooding, AODV, OLSR, source routing, DHT-based."
+}

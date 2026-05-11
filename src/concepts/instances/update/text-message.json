@@ -1,0 +1,17 @@
+{
+  "ID": "text-message",
+  "name": "Text Message",
+  "type": "message",
+  "topic": "channel-default",
+  "payload_bytes_typical": 40,
+  "payload_bytes_max": 200,
+  "frequency_hz": 0.001,
+  "ttl_sec": 600,
+  "priority": 5,
+  "idempotent": true,
+  "requires_ack": false,
+  "reach": "channel",
+  "encoding_shape": "event",
+  "restates_if_missed": false,
+  "summary": "Human-typed chat. Low frequency per user, but every node sees it on the channel."
+}

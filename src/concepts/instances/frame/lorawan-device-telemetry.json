@@ -1,0 +1,11 @@
+{
+  "ID": "lorawan-device-telemetry",
+  "name": "LoRaWAN / Device Telemetry",
+  "update": "device-telemetry",
+  "protocol": "lorawan",
+  "encoding": "TLV uplink (Cayenne LPP or custom binary)",
+  "header_bytes": 13,
+  "payload_bytes": 11,
+  "total_bytes": 24,
+  "notes": "MAC header (1B) + DevAddr (4B) + FCtrl (1B) + FCnt (2B) + FPort (1B) + MIC (4B) framing around the payload. Same telemetry costs ~10B less than Meshtastic because the protocol is bound to one network."
+}

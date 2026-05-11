@@ -1,0 +1,19 @@
+{
+  "Name": "Frame",
+  "Slug": "frame",
+  "Description": "How a specific Update is encoded on the wire by a specific Protocol. Frame = Update × Protocol → bytes.",
+  "Icon": "package",
+  "Active": true,
+  "Category": "Information",
+  "Attributes": [
+    { "Name": "Name",            "Slug": "name",             "Type": "String",    "Required": true },
+    { "Name": "Update",          "Slug": "update",           "Type": "Reference", "ReferenceConcept": "update", "Required": true },
+    { "Name": "Protocol",        "Slug": "protocol",         "Type": "Reference", "ReferenceConcept": "protocol", "Required": true },
+    { "Name": "Encoding",        "Slug": "encoding",         "Type": "String",    "Description": "protobuf | CBOR | TLV | raw | JSON" },
+    { "Name": "Header Bytes",    "Slug": "header_bytes",     "Type": "Number" },
+    { "Name": "Payload Bytes",   "Slug": "payload_bytes",    "Type": "Number" },
+    { "Name": "Total Bytes",     "Slug": "total_bytes",      "Type": "Number" },
+    { "Name": "On-wire Example", "Slug": "on_wire_example",  "Type": "Text" },
+    { "Name": "Notes",           "Slug": "notes",            "Type": "Text" }
+  ]
+}

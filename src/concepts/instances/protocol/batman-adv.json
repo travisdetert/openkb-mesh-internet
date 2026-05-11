@@ -1,0 +1,20 @@
+{
+  "ID": "batman-adv",
+  "name": "B.A.T.M.A.N.-adv",
+  "family": "IP",
+  "layers": ["link", "network"],
+  "modulations": [],
+  "transport": "Wi-Fi (typically 2.4 / 5 GHz mesh mode)",
+  "max_payload": 1500,
+  "typical_range_km": 0.3,
+  "encryption": "None at the protocol layer (rely on Wi-Fi WPA or upper layers)",
+  "governance": "open-mesh.org, Linux kernel module",
+  "open_source": true,
+  "summary": "Layer-2 Wi-Fi mesh: nodes look like a single Ethernet to the user, kernel routes frames optimally.",
+  "why": "Community Wi-Fi networks (Freifunk, guifi.net) — link many rooftop radios into one big LAN.",
+  "tradeoffs": "Wi-Fi range. Layer-2 flooding scales poorly past hundreds of nodes. No native encryption.",
+  "reference_url": "https://www.open-mesh.org/projects/batman-adv",
+  "difficulty": 3,
+  "routing_scheme": "olsr",
+  "tx_power_dbm_typical": 20
+}

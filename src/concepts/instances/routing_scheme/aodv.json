@@ -1,0 +1,12 @@
+{
+  "ID": "aodv",
+  "name": "AODV (reactive)",
+  "family": "reactive",
+  "hop_latency_ms_typical": 80,
+  "hop_loss_probability_typical": 0.04,
+  "max_practical_hops": 10,
+  "route_discovery_cost_hops": 4,
+  "retransmits_on_loss": 2,
+  "failure_mode": "Stale route → packet lost until rediscovery (RREQ flood) repaves the path. First packet to a new destination is always slow.",
+  "summary": "Ad-hoc On-demand Distance Vector. Floods a Route Request only when needed; reply traces a reverse path. Subsequent packets are unicast and fast — first packet pays the discovery cost."
+}

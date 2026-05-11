@@ -1,0 +1,14 @@
+{
+  "ID": "ShortSlow",
+  "name": "Short Slow",
+  "label": "Short Slow",
+  "scheme": "CSS",
+  "sf": 8,
+  "bw": 250000,
+  "cr": 5,
+  "sensitivity_dbm": -129,
+  "bitrate_bps": 6250,
+  "airtime_sec_50byte": 0.20,
+  "default_range": "short",
+  "notes": "+3 dB sensitivity over ShortFast for half the bitrate."
+}
