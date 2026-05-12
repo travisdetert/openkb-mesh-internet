@@ -182,7 +182,7 @@ export class MeshtasticSerialConnection {
 
       port.open((err) => {
         if (err) {
-          reject(new Error(`Failed to open ${portPath}: ${err.message}`));
+          reject(new Error(explainOpenError(portPath, err)));
           return;
         }
         this.port = port;
@@ -306,4 +306,37 @@ function buildDescription(port: { manufacturer?: string; vendorId?: string; prod
   if (port.manufacturer) parts.push(port.manufacturer);
   if (port.vendorId && port.productId) parts.push(`[${port.vendorId}:${port.productId}]`);
   return parts.join(' ') || 'Unknown device';
+}
+
+/**
+ * Translate a raw serialport open error into something the user can act on.
+ * The most common failure mode on Linux is EACCES because the invoking user
+ * isn't in the `dialout` group; on macOS it's a stale port held by another
+ * process; on Windows it's "Access is denied" for the same reason.
+ */
+function explainOpenError(portPath: string, err: NodeJS.ErrnoException): string {
+  const raw = err.message || String(err);
+  const code = err.code || '';
+  const denied = code === 'EACCES' || /permission denied|access is denied/i.test(raw);
+  const busy = code === 'EBUSY' || /resource busy|access is denied.*\(busy\)/i.test(raw);
+
+  if (denied) {
+    if (process.platform === 'linux') {
+      return `Permission denied opening ${portPath}. On Linux, serial devices are restricted to the "dialout" group. Fix: run "sudo usermod -aG dialout $USER", then log out and back in (or run "newgrp dialout" in the shell that launches this app). Verify with "ls -l ${portPath}" — it should be owned by root:dialout.`;
+    }
+    if (process.platform === 'darwin') {
+      return `Permission denied opening ${portPath}. Another process may hold the port, or macOS hasn't granted USB access yet. Close the official Meshtastic app / CLI / serial monitors and try again.`;
+    }
+    return `Permission denied opening ${portPath}. Close any other app that might hold the port (Meshtastic CLI, Arduino IDE, serial monitor) and retry.`;
+  }
+
+  if (busy) {
+    return `${portPath} is busy — another process has it open. Close the official Meshtastic app, Arduino IDE, screen/minicom, or any other serial monitor and try again.`;
+  }
+
+  if (code === 'ENOENT') {
+    return `${portPath} disappeared before we could open it. The radio may have unplugged or rebooted — click Rescan.`;
+  }
+
+  return `Failed to open ${portPath}: ${raw}`;
 }

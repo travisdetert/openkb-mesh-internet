@@ -264,7 +264,7 @@ export function ConnectionWizard({
               </p>
             </div>
           )}
-          {err && <div style={{ color: 'var(--bad)', marginTop: 8, fontFamily: 'var(--mono)', fontSize: 12 }}>{err}</div>}
+          {err && <ConnectError message={err} />}
         </div>
       ) : (
         <div className="conn-bar">
@@ -598,6 +598,68 @@ function SyncProgress({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function ConnectError({ message }: { message: string }) {
+  const lower = message.toLowerCase();
+  const isPerm = lower.includes('permission denied');
+  const isBusy = lower.includes('is busy') || lower.includes('resource busy');
+  const isGone = lower.includes('disappeared');
+
+  // Pull out a shell command if the message contains one in quotes — render as a
+  // copyable code block so the user doesn't have to retype it.
+  const cmdMatch = message.match(/"([^"]*sudo[^"]*)"/);
+  const cmd = cmdMatch?.[1];
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    if (!cmd) return;
+    try { await navigator.clipboard.writeText(cmd); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    catch { /* clipboard may be unavailable; user can still select and copy */ }
+  };
+
+  let title = 'Connection failed';
+  if (isPerm) title = 'Permission denied — your user can\'t open the serial device';
+  else if (isBusy) title = 'Port is busy — another app holds it open';
+  else if (isGone) title = 'The port vanished';
+
+  return (
+    <div
+      className="info-card"
+      style={{ borderLeftColor: 'var(--bad)', marginTop: 10 }}
+      role="alert"
+    >
+      <p style={{ margin: '0 0 6px', color: 'var(--bad)', fontWeight: 600 }}>{title}</p>
+      <p style={{ margin: '0 0 8px', fontSize: 12.5, color: 'var(--text-dim)' }}>{message}</p>
+      {cmd && (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'stretch' }}>
+          <code
+            style={{
+              flex: 1,
+              fontFamily: 'var(--mono)',
+              fontSize: 12,
+              padding: '6px 8px',
+              background: 'var(--bg-deep, #0b0d11)',
+              border: '1px solid var(--border, #2a2f38)',
+              borderRadius: 4,
+              userSelect: 'all',
+              whiteSpace: 'nowrap',
+              overflowX: 'auto',
+            }}
+          >
+            {cmd}
+          </code>
+          <button className="ghost" onClick={copy} style={{ fontSize: 11, padding: '4px 10px' }}>
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      )}
+      {isPerm && (
+        <p style={{ margin: '8px 0 0', fontSize: 11.5, color: 'var(--text-faint)' }}>
+          After running the command you must log out and back in (or run <code>newgrp dialout</code> in the shell that launches this app) for the group change to take effect.
+        </p>
+      )}
     </div>
   );
 }
