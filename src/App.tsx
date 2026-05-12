@@ -36,7 +36,9 @@ export type ChatTarget =
   | { kind: 'dm'; nodeNum: number };
 
 export function App() {
-  const [tab, setTab] = useState<TabId>('home');
+  // Chat is the app's reason for being — open it by default. Users who want
+  // setup land on Connect once via the prominent status block in the sidebar.
+  const [tab, setTab] = useState<TabId>('chat');
   const [chatTarget, setChatTarget] = useState<ChatTarget | null>(null);
   const mesh = useMesh();
 

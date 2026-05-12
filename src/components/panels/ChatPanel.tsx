@@ -2,6 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatTarget } from '../../App';
 import { useActiveConnId, useMeshContext } from '../../hooks/MeshContext';
 import { channelHash, channelHashHex, pskFingerprint, pskLabel } from '../../channel-identity';
+import { estimateAirtimeSec, utf8Bytes, SOFT_BYTE_LIMIT, HARD_BYTE_LIMIT } from '../../lib/lora-airtime';
+import { loadCanned, saveCanned, resetCanned } from '../../lib/canned-messages';
+import { chunkText, parseChunk, assembleMessages, MAX_CHUNKS } from '../../lib/message-codec';
+import { maybeCompress, maybeDecompress, isCompressed } from '../../lib/text-compress';
 
 const BROADCAST = 0xffffffff;
 
@@ -274,16 +278,24 @@ interface Props {
 export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) {
   const connId = useActiveConnId();
   const myNum = state.myInfo?.myNodeNum ?? 0;
-  const [text, setText] = useState('');
+  // Drafts are kept per target so switching conversations doesn't nuke half-typed text.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
-  const [activeTab, setActiveTab] = useState<'conversations' | 'activity' | 'settings'>('conversations');
+  const [activeTab, setActiveTab] = useState<'conversations' | 'activity' | 'help' | 'settings'>('conversations');
   // Per-thread last-viewed for unread badges; keyed by ConvoItem.key.
   const [lastViewed, setLastViewed] = useState<Record<string, number>>({});
+  // Override for whether sends request an ack. 'auto' = default behavior (DMs on, broadcasts off).
+  const [ackOverride, setAckOverride] = useState<'auto' | 'on' | 'off'>('auto');
+  // Canned-message list (persisted in localStorage).
+  const [canned, setCanned] = useState<string[]>(() => loadCanned());
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const convos = useMemo(() => buildConvoList(messages, nodes, state, lastViewed), [messages, nodes, state, lastViewed]);
 
   const effective: ChatTarget | null = target ?? (convos[0]?.target ?? null);
+  const draftKey = effective ? targetKey(effective) : '';
+  const text = drafts[draftKey] ?? '';
+  const setText = (v: string) => setDrafts((d) => ({ ...d, [draftKey]: v }));
 
   const filtered = useMemo(() => {
     if (!effective) return [];
@@ -301,19 +313,85 @@ export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) 
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [filtered.length, effective?.kind === 'dm' ? effective.nodeNum : effective?.kind === 'channel' ? effective.index : -1]);
 
-  const send = async () => {
-    if (!text.trim() || state.status !== 'ready' || !effective || !connId) return;
+  // Effective ack policy for the current target: 'auto' means DMs request ack, broadcasts don't.
+  const wantAckEffective = (): boolean => {
+    if (!effective) return false;
+    if (ackOverride === 'on') return true;
+    if (ackOverride === 'off') return false;
+    return effective.kind === 'dm';
+  };
+
+  // While a chunked send is in flight, surface progress so the user can see
+  // "sending 3/5 chunks…" instead of a frozen Send button.
+  const [sendProgress, setSendProgress] = useState<{ index: number; total: number; airtimeRemainingSec: number } | null>(null);
+
+  const send = async (overrideText?: string) => {
+    const payload = (overrideText ?? text).trim();
+    if (!payload || state.status !== 'ready' || !effective || !connId) return;
     setSending(true);
-    try {
+
+    // Compress first — if it wins, we may even drop chunks. The result is
+    // either the original payload (compression skipped because it didn't help)
+    // or a compressed string carrying the \x01Z| prefix.
+    const compression = await maybeCompress(payload);
+    const wirePayload = compression.payload;
+    const bytes = compression.wireBytes;
+    const needsChunking = bytes > HARD_BYTE_LIMIT;
+    const sendOne = async (textPayload: string) => {
       if (effective.kind === 'channel') {
-        await window.mesh.sendText({ connId, text: text.trim(), channel: effective.index });
+        await window.mesh.sendText({ connId, text: textPayload, channel: effective.index, wantAck: wantAckEffective() });
       } else {
-        await window.mesh.sendText({ connId, text: text.trim(), to: effective.nodeNum, wantAck: true });
+        await window.mesh.sendText({ connId, text: textPayload, to: effective.nodeNum, wantAck: wantAckEffective() });
       }
-      setText('');
+    };
+
+    try {
+      if (!needsChunking) {
+        await sendOne(wirePayload);
+      } else {
+        const plan = chunkText(wirePayload);
+        // Estimate per-chunk airtime so we can rate-limit. We don't want to
+        // dump 20 packets into the radio's queue in 50 ms — the radio honors
+        // duty cycle internally, but the UI should show paced progress and
+        // we should yield enough between sends to let acks land between.
+        const preset = state.loraConfig?.modemPresetName;
+        const sf = state.loraConfig?.spreadFactor;
+        const bw = state.loraConfig?.bandwidth;
+        const perChunkAirtime = estimateAirtimeSec(200, preset, sf, bw);
+        // Add 200ms safety + min 400ms between to avoid starving acks.
+        const interChunkDelayMs = Math.max(400, perChunkAirtime * 1000 + 200);
+
+        for (let i = 0; i < plan.chunks.length; i++) {
+          setSendProgress({
+            index: i + 1,
+            total: plan.chunks.length,
+            airtimeRemainingSec: perChunkAirtime * (plan.chunks.length - i),
+          });
+          await sendOne(plan.chunks[i]);
+          if (i < plan.chunks.length - 1) {
+            await new Promise((r) => setTimeout(r, interChunkDelayMs));
+          }
+        }
+      }
+      if (overrideText === undefined) setText('');
     } finally {
       setSending(false);
+      setSendProgress(null);
     }
+  };
+
+  // Persist canned-message edits + provide a setter that auto-saves.
+  const updateCanned = (next: string[]) => {
+    setCanned(next);
+    saveCanned(next);
+  };
+
+  // Insert my current position into the draft as a compact "@lat,lon" string.
+  const insertPosition = () => {
+    const myNode = nodes.find((n) => n.num === myNum);
+    if (!myNode || myNode.lat === undefined || myNode.lon === undefined) return;
+    const tag = ` @${myNode.lat.toFixed(5)},${myNode.lon.toFixed(5)}${myNode.altitude ? `h${Math.round(myNode.altitude)}m` : ''}`;
+    setText((text + tag).slice(0, HARD_BYTE_LIMIT));
   };
 
   const resend = async (m: TextMessage) => {
@@ -379,6 +457,9 @@ export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) 
           Activity
           <span className="subnav-count">{messages.length}</span>
         </button>
+        <button className={'subnav-btn' + (activeTab === 'help' ? ' active' : '')} onClick={() => setActiveTab('help')}>
+          Help
+        </button>
         <button className={'subnav-btn' + (activeTab === 'settings' ? ' active' : '')} onClick={() => setActiveTab('settings')}>
           Settings
         </button>
@@ -406,12 +487,20 @@ export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) 
           setText={setText}
           send={send}
           sending={sending}
+          sendProgress={sendProgress}
           resend={resend}
           scrollRef={scrollRef}
+          canned={canned}
+          ackOverride={ackOverride}
+          setAckOverride={setAckOverride}
+          insertPosition={insertPosition}
         />
       )}
       {activeTab === 'activity' && (
         <ActivityView messages={messages} nodes={nodes} state={state} myNum={myNum} setTarget={setTarget} setActiveTab={setActiveTab} />
+      )}
+      {activeTab === 'help' && (
+        <HelpView canned={canned} updateCanned={updateCanned} />
       )}
       {activeTab === 'settings' && (
         <SettingsView state={state} />
@@ -424,23 +513,21 @@ export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) 
 // Conversations tab
 // ────────────────────────────────────────────────────────────────────
 
-function ConversationsView({
-  convos, effective, setTarget, filtered, messages, nodes, state, myNum,
-  text, setText, send, sending, resend, scrollRef,
-}: ConversationsProps) {
+function ConversationsView(props: ConversationsProps) {
+  const { state, text, effective } = props;
   const composeRef = useRef<HTMLTextAreaElement>(null);
   // Auto-focus the compose box when the user enters a conversation.
   useEffect(() => {
     if (state.status === 'ready') composeRef.current?.focus();
   }, [effective?.kind === 'dm' ? effective.nodeNum : effective?.kind === 'channel' ? effective.index : -1, state.status]);
-  // Auto-grow textarea height to fit content (up to 5 lines).
+  // Auto-grow textarea height to fit content (up to ~10 lines).
   useEffect(() => {
     const el = composeRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    el.style.height = Math.max(72, Math.min(el.scrollHeight, 220)) + 'px';
   }, [text]);
-  return _Conversations({ convos, effective, setTarget, filtered, messages, nodes, state, myNum, text, setText, send, sending, resend, scrollRef, composeRef });
+  return _Conversations({ ...props, composeRef });
 }
 interface ConversationsProps {
   convos: ConvoItem[];
@@ -453,17 +540,40 @@ interface ConversationsProps {
   myNum: number;
   text: string;
   setText: (s: string) => void;
-  send: () => void;
+  send: (overrideText?: string) => void;
   sending: boolean;
+  sendProgress: { index: number; total: number; airtimeRemainingSec: number } | null;
   resend: (m: TextMessage) => void;
   scrollRef: React.RefObject<HTMLDivElement>;
+  canned: string[];
+  ackOverride: 'auto' | 'on' | 'off';
+  setAckOverride: (v: 'auto' | 'on' | 'off') => void;
+  insertPosition: () => void;
 }
 
 function _Conversations({
   convos, effective, setTarget, filtered, messages, nodes, state, myNum,
-  text, setText, send, sending, resend, scrollRef, composeRef,
+  text, setText, send, sending, sendProgress, resend, scrollRef, composeRef,
+  canned, ackOverride, setAckOverride, insertPosition,
 }: ConversationsProps & { composeRef: React.RefObject<HTMLTextAreaElement> }) {
   const connId = useActiveConnId();
+  const [cannedOpen, setCannedOpen] = useState(false);
+
+  // Cmd/Ctrl + 1-9 sends the corresponding canned message immediately, without
+  // touching the in-flight draft. Disabled while sending or disconnected.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const n = Number(e.key);
+      if (!Number.isInteger(n) || n < 1 || n > 9) return;
+      const msg = canned[n - 1];
+      if (!msg) return;
+      e.preventDefault();
+      if (state.status === 'ready' && effective && !sending) send(msg);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [canned, state.status, effective, sending, send]);
   const headerLabel = effective
     ? effective.kind === 'channel'
       ? `# ${convos.find((c) => c.key === `ch:${effective.index}`)?.label ?? effective.index}`
@@ -572,47 +682,329 @@ function _Conversations({
           {filtered.length === 0 ? (
             <EmptyExplainer state={state} effective={effective} totalMessages={messages.length} />
           ) : (
-            <MessageList messages={filtered} nodes={nodes} myNum={myNum} onResend={resend} />
+            <AssembledMessageList filtered={filtered} nodes={nodes} myNum={myNum} onResend={resend} />
           )}
         </div>
 
         <DeliveryProbe filtered={filtered} myNum={myNum} effective={effective} />
 
-        <div className="compose">
-          <textarea
-            ref={composeRef}
-            className="text compose-textarea"
-            placeholder={placeholder}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-            disabled={state.status !== 'ready' || sending || !effective}
-            maxLength={200}
-            rows={1}
-          />
-          <button className="primary" onClick={send} disabled={state.status !== 'ready' || sending || !text.trim() || !effective}>
-            {sending ? 'Sending…' : 'Send'}
-          </button>
-        </div>
-        <div className="compose-hint">
-          {text.length}/200 chars · Enter sends · Shift+Enter newline · {effective?.kind === 'dm'
-            ? `to ${shortHex(effective.nodeNum)} · wantAck=true`
-            : `broadcast · channel ${effective?.kind === 'channel' ? effective.index : 0}`}
-        </div>
+        {sendProgress && (
+          <div className="chat-send-progress">
+            <div className="chat-send-progress-label">
+              SENDING {sendProgress.index}/{sendProgress.total} CHUNKS
+              <span style={{ marginLeft: 8, color: 'var(--text-faint)' }}>
+                ~{sendProgress.airtimeRemainingSec.toFixed(1)}s of airtime remaining
+              </span>
+            </div>
+            <div className="chat-send-progress-bar">
+              <div className="chat-send-progress-fill" style={{ width: `${(sendProgress.index / sendProgress.total) * 100}%` }} />
+            </div>
+          </div>
+        )}
+
+        <RichCompose
+          composeRef={composeRef}
+          text={text}
+          setText={setText}
+          send={send}
+          sending={sending}
+          state={state}
+          effective={effective}
+          placeholder={placeholder}
+          nodes={nodes}
+          myNum={myNum}
+          canned={canned}
+          cannedOpen={cannedOpen}
+          setCannedOpen={setCannedOpen}
+          ackOverride={ackOverride}
+          setAckOverride={setAckOverride}
+          insertPosition={insertPosition}
+        />
       </div>
     </div>
   );
 }
 
+// ────────────────────────────────────────────────────────────────────
+// Compose box with live airtime + canned-message popover + ACK toggle
+// ────────────────────────────────────────────────────────────────────
+
+function RichCompose({
+  composeRef, text, setText, send, sending, state, effective, placeholder,
+  nodes, myNum, canned, cannedOpen, setCannedOpen, ackOverride, setAckOverride, insertPosition,
+}: {
+  composeRef: React.RefObject<HTMLTextAreaElement>;
+  text: string;
+  setText: (s: string) => void;
+  send: (overrideText?: string) => void;
+  sending: boolean;
+  state: ConnectionState;
+  effective: ChatTarget | null;
+  placeholder: string;
+  nodes: NodeRecord[];
+  myNum: number;
+  canned: string[];
+  cannedOpen: boolean;
+  setCannedOpen: (v: boolean) => void;
+  ackOverride: 'auto' | 'on' | 'off';
+  setAckOverride: (v: 'auto' | 'on' | 'off') => void;
+  insertPosition: () => void;
+}) {
+  const bytes = utf8Bytes(text);
+  // Live "what would compression do?" preview. We re-run maybeCompress as the
+  // user types (debounced via React's render batching). It's cheap for chat-
+  // sized text. The result is shown in the toolbar so the user can see
+  // compression earning its keep before clicking Send.
+  const [compressionPreview, setCompressionPreview] = useState<{ wireBytes: number; used: boolean } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!text.trim() || bytes < 80) {
+      setCompressionPreview(null);
+      return;
+    }
+    maybeCompress(text).then((r) => {
+      if (!cancelled) setCompressionPreview({ wireBytes: r.wireBytes, used: r.used });
+    });
+    return () => { cancelled = true; };
+  }, [text, bytes]);
+  const effectiveBytes = compressionPreview?.used ? compressionPreview.wireBytes : bytes;
+  const overSoft = effectiveBytes > SOFT_BYTE_LIMIT;
+  const willChunk = effectiveBytes > HARD_BYTE_LIMIT;
+  // Predict how many chunks this will become — 200 bytes payload per chunk.
+  const expectedChunks = willChunk ? Math.min(MAX_CHUNKS, Math.ceil(effectiveBytes / 200)) : 1;
+  const overMaxChunks = willChunk && effectiveBytes > MAX_CHUNKS * 200;
+
+  const airtime = useMemo(() => {
+    if (!text.trim()) return 0;
+    // Use the compressed size if compression is going to win, since that's
+    // what actually goes on the air.
+    return estimateAirtimeSec(effectiveBytes, state.loraConfig?.modemPresetName, state.loraConfig?.spreadFactor, state.loraConfig?.bandwidth);
+  }, [effectiveBytes, text, state.loraConfig]);
+
+  // Duty-cycle context: most regions allow ~1% duty (36 s/hr). Show airtime
+  // as a fraction of that, so user sees "1.8s = 5% of your 1-hour duty budget".
+  const dutyPctPerHour = airtime > 0 ? (airtime / 36) * 100 : 0;
+
+  const airtimeColor = airtime < 0.5 ? 'var(--good)' : airtime < 2 ? 'var(--warn)' : 'var(--bad)';
+  const bytesColor = overMaxChunks ? 'var(--bad)' : overSoft ? 'var(--warn)' : 'var(--text-faint)';
+
+  const myNode = nodes.find((n) => n.num === myNum);
+  const canInsertPosition = myNode && myNode.lat !== undefined && myNode.lon !== undefined && !(myNode.lat === 0 && myNode.lon === 0);
+
+  // Effective ack policy for the current target.
+  const ackActive = ackOverride === 'on' || (ackOverride === 'auto' && effective?.kind === 'dm');
+  const ackEditable = effective !== null;
+
+  // Resolve destination label for the compose summary.
+  const destLabel = !effective
+    ? '—'
+    : effective.kind === 'channel'
+      ? `# channel ${effective.index}`
+      : `→ ${shortHex(effective.nodeNum)}`;
+
+  const disabled = state.status !== 'ready' || sending || !effective || overMaxChunks;
+
+  return (
+    <>
+      <div className="compose">
+        <textarea
+          ref={composeRef}
+          className="text compose-textarea"
+          placeholder={placeholder}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              if (!disabled && text.trim()) send();
+            }
+          }}
+          disabled={state.status !== 'ready' || sending || !effective}
+          rows={3}
+        />
+        <button
+          className="primary compose-send-btn"
+          onClick={() => send()}
+          disabled={disabled || !text.trim()}
+          title={overMaxChunks ? `Message exceeds the chunked-send cap of ~${MAX_CHUNKS * 200} bytes. Trim or split it.` : willChunk ? `Will be sent as ${expectedChunks} chunks.` : undefined}
+        >
+          {sending ? 'Sending…' : 'Send'}
+        </button>
+      </div>
+
+      <div className="compose-toolbar">
+        <div className="compose-toolbar-actions">
+          <button
+            className="ghost compose-action"
+            onClick={() => setCannedOpen(!cannedOpen)}
+            disabled={state.status !== 'ready' || !effective}
+            title="Quick-insert pre-canned messages"
+          >
+            Quick ▾
+          </button>
+          <button
+            className="ghost compose-action"
+            onClick={insertPosition}
+            disabled={!canInsertPosition || state.status !== 'ready' || !effective}
+            title={canInsertPosition ? 'Append your current @lat,lon to the message' : 'No position from your radio yet'}
+          >
+            + Position
+          </button>
+          <label
+            className={'compose-toggle' + (ackActive ? ' on' : '') + (!ackEditable ? ' dim' : '')}
+            title="Request a routing ack from the destination. Default: on for DMs, off for broadcasts."
+          >
+            <input
+              type="checkbox"
+              checked={ackActive}
+              disabled={!ackEditable || state.status !== 'ready'}
+              onChange={(e) => {
+                if (!effective) return;
+                const def = effective.kind === 'dm';
+                // If the new value matches the default, return to 'auto'.
+                setAckOverride(e.target.checked === def ? 'auto' : (e.target.checked ? 'on' : 'off'));
+              }}
+            />
+            Request ACK
+            {ackOverride !== 'auto' && <span className="compose-toggle-override">override</span>}
+          </label>
+        </div>
+
+        <div className="compose-toolbar-meta">
+          <span style={{ color: bytesColor }} title="UTF-8 bytes on the wire (after compression if enabled). Single packets cap at ~230 B; longer messages auto-chunk into multiple packets.">
+            {effectiveBytes} B
+            {compressionPreview?.used && (
+              <span style={{ color: 'var(--good)', marginLeft: 4 }} title={`Raw text is ${bytes} B; DEFLATE+base64 cut it to ${compressionPreview.wireBytes} B.`}>
+                ↓{bytes} ({Math.round((1 - compressionPreview.wireBytes / bytes) * 100)}%)
+              </span>
+            )}
+            {willChunk && !overMaxChunks && <> · <strong style={{ color: 'var(--warn)' }}>{expectedChunks} chunks</strong></>}
+            {overMaxChunks && <strong style={{ color: 'var(--bad)' }}> — too long, max {MAX_CHUNKS * 200} B</strong>}
+          </span>
+          <span style={{ color: 'var(--text-faint)' }}>·</span>
+          {text.trim() ? (
+            <span style={{ color: airtimeColor }} title="Estimated time-on-air at the current LoRa preset. ~1% of an hour (36 s) is the regulatory duty-cycle budget in EU.">
+              ~{airtime < 1 ? `${(airtime * 1000).toFixed(0)} ms` : `${airtime.toFixed(1)} s`} air
+              {dutyPctPerHour > 0 && <> · <span style={{ color: dutyPctPerHour > 2 ? 'var(--warn)' : 'var(--text-faint)' }}>{dutyPctPerHour.toFixed(1)}% / hr duty</span></>}
+            </span>
+          ) : (
+            <span style={{ color: 'var(--text-faint)' }}>airtime · duty</span>
+          )}
+          <span style={{ color: 'var(--text-faint)' }}>·</span>
+          <span style={{ color: 'var(--text-faint)' }}>{destLabel}</span>
+          <span style={{ color: 'var(--text-faint)' }}>·</span>
+          <span style={{ color: 'var(--text-faint)' }}>Enter sends · Shift+Enter newline · ⌘1–9 send canned</span>
+        </div>
+      </div>
+
+      {cannedOpen && (
+        <div className="compose-canned">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+            <strong style={{ fontSize: 12, color: 'var(--text-dim)' }}>Quick messages — click to send now</strong>
+            <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>edit list in Help</span>
+          </div>
+          <div className="compose-canned-grid">
+            {canned.length === 0 && <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>No quick messages yet. Add some in the Help tab.</span>}
+            {canned.map((msg, i) => (
+              <button
+                key={i}
+                className="compose-canned-btn"
+                onClick={() => { send(msg); setCannedOpen(false); }}
+                disabled={state.status !== 'ready' || !effective || sending}
+                title={`Cmd/Ctrl+${i + 1 < 10 ? i + 1 : ''} sends without opening this menu`}
+              >
+                {i < 9 && <span className="compose-canned-key">{i + 1}</span>}
+                {msg}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** TextMessage with optional chunked-assembly + compression metadata. */
+interface DisplayMessage extends TextMessage {
+  _chunkInfo?: { total: number; received: number; bytes: number; complete: boolean };
+  _compression?: { wireBytes: number; decompressedBytes: number };
+}
+
+function AssembledMessageList({
+  filtered, nodes, myNum, onResend,
+}: {
+  filtered: TextMessage[];
+  nodes: NodeRecord[];
+  myNum: number;
+  onResend: (m: TextMessage) => void;
+}) {
+  // Cache of decompression results keyed by compressed text. Compression is
+  // deterministic, so the same wire payload always inflates to the same plain
+  // text — caching avoids re-decompressing every render.
+  const [decompressed, setDecompressed] = useState<Map<string, string>>(new Map());
+
+  // First pass: build the assembled-but-still-possibly-compressed list.
+  const assembledList = useMemo(() => assembleMessages(filtered), [filtered]);
+
+  // Kick off decompression for any complete chunked message whose joined
+  // text starts with the compression prefix. This runs async; the cache
+  // updates trigger a re-render that swaps in the decompressed text.
+  useEffect(() => {
+    let cancelled = false;
+    for (const a of assembledList) {
+      if (!a.complete) continue;
+      if (!isCompressed(a.text)) continue;
+      if (decompressed.has(a.text)) continue;
+      maybeDecompress(a.text).then((plain) => {
+        if (cancelled) return;
+        setDecompressed((m) => {
+          if (m.has(a.text)) return m;
+          const next = new Map(m);
+          next.set(a.text, plain);
+          return next;
+        });
+      });
+    }
+    return () => { cancelled = true; };
+  }, [assembledList, decompressed]);
+
+  const display = useMemo<DisplayMessage[]>(() => {
+    return assembledList.map((a): DisplayMessage => {
+      const wireBytes = a.parts.reduce((s, p) => s + new TextEncoder().encode(p.text).length, 0);
+      // Did this come in compressed?
+      const compressed = a.complete && isCompressed(a.text);
+      const plain = compressed ? (decompressed.get(a.text) ?? '(decompressing…)') : a.text;
+      const decompressedBytes = compressed ? new TextEncoder().encode(plain).length : wireBytes;
+
+      // Combine ackStatus across chunks.
+      let ackStatus: TextMessage['ackStatus'] = a.representative.ackStatus;
+      if (a.parts.length > 1) {
+        if (a.parts.every((p) => p.ackStatus === 'acked')) ackStatus = 'acked';
+        else if (a.parts.some((p) => p.ackStatus === 'failed')) ackStatus = 'failed';
+        else if (a.parts.some((p) => p.ackStatus === 'pending')) ackStatus = 'pending';
+      }
+
+      const first = a.parts[0];
+      const text = !a.complete
+        ? `${a.text}\n[receiving ${a.received}/${a.total} chunks…]`
+        : plain;
+
+      return {
+        ...first,
+        text,
+        ackStatus,
+        _chunkInfo: a.chunked ? { total: a.total, received: a.received, bytes: wireBytes, complete: a.complete } : undefined,
+        _compression: compressed ? { wireBytes, decompressedBytes } : undefined,
+      };
+    });
+  }, [assembledList, decompressed]);
+  return <MessageList messages={display} nodes={nodes} myNum={myNum} onResend={onResend} />;
+}
+
 function MessageList({
   messages, nodes, myNum, onResend,
 }: {
-  messages: TextMessage[];
+  messages: DisplayMessage[];
   nodes: NodeRecord[];
   myNum: number;
   onResend: (m: TextMessage) => void;
@@ -659,7 +1051,7 @@ function MessageList({
 function ChatBubble({
   m, nodes, isMe, showHeader, attachedTop, attachedBottom, onResend,
 }: {
-  m: TextMessage;
+  m: DisplayMessage;
   nodes: NodeRecord[];
   isMe: boolean;
   showHeader: boolean;
@@ -692,6 +1084,28 @@ function ChatBubble({
             {!isMe && m.rxRssi !== 0 && <span>{m.rxRssi} dBm</span>}
             {!isMe && m.rxSnr !== 0 && <span>SNR {m.rxSnr.toFixed(1)}</span>}
             {!isMe && m.hopStart > 0 && <span>hop {m.hopStart - m.hopLimit}/{m.hopStart}</span>}
+            {m._chunkInfo && (
+              <span
+                className={'chunk-badge' + (m._chunkInfo.complete ? '' : ' partial')}
+                title={
+                  m._chunkInfo.complete
+                    ? `Assembled from ${m._chunkInfo.total} chunks (${m._chunkInfo.bytes} bytes total on air)`
+                    : `Receiving — ${m._chunkInfo.received} of ${m._chunkInfo.total} chunks have arrived`
+                }
+              >
+                {m._chunkInfo.complete
+                  ? `${m._chunkInfo.total} chunks · ${m._chunkInfo.bytes} B`
+                  : `${m._chunkInfo.received}/${m._chunkInfo.total} chunks`}
+              </span>
+            )}
+            {m._compression && (
+              <span
+                className="compress-badge"
+                title={`Compressed with DEFLATE — sent ${m._compression.wireBytes} B over the air, decompressed to ${m._compression.decompressedBytes} B of plain text (${Math.round((1 - m._compression.wireBytes / m._compression.decompressedBytes) * 100)}% smaller)`}
+              >
+                deflate −{Math.round((1 - m._compression.wireBytes / m._compression.decompressedBytes) * 100)}%
+              </span>
+            )}
             {isMe && ack === 'pending' && <span className="ack ack-pending">… pending</span>}
             {isMe && ack === 'acked' && <span className="ack ack-acked">✓ delivered</span>}
             {isMe && failed && (
@@ -855,6 +1269,157 @@ function SettingsView({ state }: { state: ConnectionState }) {
         </div>
         <div className="info-card">
           <p style={{ margin: 0 }}><strong>Channel keys.</strong> Channel encryption keys are configured on the radio itself. This app reads them via <code>want_config_id</code> but does not let you change them — that's a job for the official setup app, where typo-protection is more important than aesthetic.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Help tab — how chat works + canned-messages editor
+// ────────────────────────────────────────────────────────────────────
+
+function HelpView({ canned, updateCanned }: { canned: string[]; updateCanned: (next: string[]) => void }) {
+  const [editing, setEditing] = useState<string[]>(canned);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => { setEditing(canned); setDirty(false); }, [canned]);
+
+  const update = (i: number, v: string) => { setEditing((arr) => arr.map((x, idx) => idx === i ? v : x)); setDirty(true); };
+  const remove = (i: number) => { setEditing((arr) => arr.filter((_, idx) => idx !== i)); setDirty(true); };
+  const add = () => { setEditing((arr) => [...arr, '']); setDirty(true); };
+  const move = (i: number, delta: -1 | 1) => {
+    const j = i + delta;
+    if (j < 0 || j >= editing.length) return;
+    setEditing((arr) => {
+      const next = arr.slice();
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+    setDirty(true);
+  };
+  const save = () => { updateCanned(editing.filter((s) => s.trim().length > 0)); setDirty(false); };
+  const reset = () => { updateCanned(resetCanned()); setDirty(false); };
+
+  return (
+    <div className="layout-split-wide">
+      <div>
+        <div className="card">
+          <h2 style={{ marginTop: 0 }}>How chat works over LoRa</h2>
+          <p style={{ margin: '0 0 10px', color: 'var(--text-dim)', fontSize: 13 }}>
+            Each chat message is a Meshtastic <code>TEXT_MESSAGE_APP</code> packet. It carries:
+            an 8-bit channel hash so receivers pick the right decryption key, an encrypted payload
+            (up to ~230 bytes), and routing fields (from, to, hop counter, packet id, want-ack).
+            On the air it spends anywhere from ~30 ms to several seconds depending on the LoRa preset
+            and message length.
+          </p>
+          <p style={{ margin: 0, color: 'var(--text-dim)', fontSize: 13 }}>
+            Two radios "talk" if their channel <strong>name + PSK</strong> match (yielding the same
+            channel hash), they're on the same region + modem preset, and they're physically in range
+            (or there's a relay between them). The Compare Radios panel checks all of that for you.
+          </p>
+        </div>
+
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Channel vs DM</h3>
+          <dl className="kv kv-tight">
+            <dt>Channel</dt><dd>Broadcast to everyone with the matching channel name + PSK. Fire-and-forget — no per-recipient ack. Like a CB radio channel.</dd>
+            <dt>DM</dt><dd>Addressed to a specific node. Mesh requests a routing ack from the destination; the dot beside your message turns green when it returns. Newer firmware uses public-key crypto (PKI) for DMs and may drop them if it doesn't have the destination's pubkey.</dd>
+          </dl>
+        </div>
+
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>ACK status legend</h3>
+          <dl className="kv kv-tight">
+            <dt><span className="ack ack-pending">…</span></dt><dd>In flight. Waiting up to 60 s for the destination's routing ack.</dd>
+            <dt><span className="ack ack-acked">✓</span></dt><dd>Delivered. Some node (destination or a relay near it) confirmed receipt.</dd>
+            <dt><span className="ack ack-failed">✗</span></dt><dd>Failed. The ack didn't come back or the mesh returned a Routing.Error. Common codes: 3=TIMEOUT, 4=NO_INTERFACE, 6=BAD_REQUEST, 32=NO_RESPONSE.</dd>
+          </dl>
+        </div>
+
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Why messages may not arrive</h3>
+          <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--text-dim)', fontSize: 13, lineHeight: 1.55 }}>
+            <li><strong>Config mismatch</strong>: region, preset, channel #, name, or PSK differs. <em>Open Compare Radios.</em></li>
+            <li><strong>Out of range or blocked</strong>: LoRa goes far but not through buildings well. <em>Open Coverage / Link Budget.</em></li>
+            <li><strong>Recipient asleep</strong>: nodes with aggressive power saving may miss packets. The keyboard/screen wakes the radio but it can still miss what arrived during sleep.</li>
+            <li><strong>Duty cycle hit</strong>: some regions cap to 1% airtime/hour. A flood of long messages can queue locally.</li>
+            <li><strong>PKI key missing for DM</strong>: newer firmware drops DMs to unknown pubkeys. Send a broadcast on the primary channel as a workaround.</li>
+            <li><strong>T-Deck screen quirk</strong>: the message may be in the radio but not on the display. Cycle screens via the trackball/button.</li>
+          </ul>
+        </div>
+
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Airtime &amp; duty cycle</h3>
+          <p style={{ margin: '0 0 8px', color: 'var(--text-dim)', fontSize: 13 }}>
+            LoRa is a narrowband mode. A 50-byte message takes about 1 s on <em>LongFast</em>, ~5 s on <em>LongSlow</em>.
+            EU regions cap radios to ~36 s of airtime per hour (1% duty cycle). The compose box
+            shows live airtime and the share of your 1-hour duty budget so you can spot accidental
+            spam.
+          </p>
+          <p style={{ margin: 0, color: 'var(--text-dim)', fontSize: 13 }}>
+            <strong>Tips to fit more in less air:</strong> use radio-operator shorthand (QSL, 73,
+            ETA, ROGER), keep messages under 50 bytes when possible, prefer broadcasts to channel
+            for group chatter (no per-message acks), and use canned messages for repeat phrases.
+          </p>
+        </div>
+
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Bandwidth tricks the app does automatically</h3>
+          <dl className="kv kv-tight">
+            <dt>Multi-packet chunking</dt><dd>Anything over ~230 bytes is split into chunks with a small reassembly header and sent sequentially. The receiver shows it as one bubble with a <span className="chunk-badge">N chunks · X B</span> tag.</dd>
+            <dt>DEFLATE compression</dt><dd>Messages over 80 bytes are tried with DEFLATE + base64 before sending; if the result is smaller than the raw text, it goes on the wire and the receiver auto-inflates. Saves 15–30% on typical English chat. Bubble shows <span className="compress-badge">deflate −22%</span> when it kicks in.</dd>
+            <dt>UTF-8-aware splitting</dt><dd>Chunks never break a multi-byte codepoint in half. Emoji and accented characters survive transit.</dd>
+            <dt>Compatibility</dt><dd>Stock Meshtastic clients (T-Deck, official app) see the raw markers as text gibberish — they can't reassemble. This is openkb-mesh-internet-only on both ends.</dd>
+          </dl>
+        </div>
+
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Keyboard shortcuts</h3>
+          <table className="data" style={{ fontSize: 12.5 }}>
+            <tbody>
+              <tr><td style={{ fontFamily: 'var(--mono)' }}>Enter</td><td>Send the current draft</td></tr>
+              <tr><td style={{ fontFamily: 'var(--mono)' }}>Shift + Enter</td><td>Newline within the draft</td></tr>
+              <tr><td style={{ fontFamily: 'var(--mono)' }}>⌘ / Ctrl + 1–9</td><td>Send the matching quick message immediately</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <div className="card">
+          <h2 style={{ marginTop: 0 }}>Quick messages</h2>
+          <p style={{ margin: '0 0 10px', color: 'var(--text-dim)', fontSize: 12.5 }}>
+            Edit your canned message list. The first 9 are bound to <code>⌘/Ctrl + 1–9</code> for one-keystroke
+            sending. Use radio shorthand to fit a lot of meaning into few bytes.
+          </p>
+          <div className="canned-editor">
+            {editing.map((msg, i) => (
+              <div key={i} className="canned-row">
+                <span className="canned-row-idx">{i + 1}</span>
+                <input
+                  className="text"
+                  value={msg}
+                  maxLength={HARD_BYTE_LIMIT}
+                  onChange={(e) => update(i, e.target.value)}
+                  placeholder="(empty)"
+                />
+                <button className="ghost canned-row-btn" onClick={() => move(i, -1)} disabled={i === 0} title="Move up">↑</button>
+                <button className="ghost canned-row-btn" onClick={() => move(i, 1)} disabled={i === editing.length - 1} title="Move down">↓</button>
+                <button className="ghost canned-row-btn" onClick={() => remove(i)} title="Delete">✕</button>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center' }}>
+            <button className="ghost" onClick={add}>+ Add message</button>
+            <button className="primary" onClick={save} disabled={!dirty}>Save</button>
+            <button className="ghost" onClick={reset} style={{ marginLeft: 'auto', color: 'var(--text-faint)' }} title="Restore the default set of canned messages">Reset to defaults</button>
+          </div>
+          {dirty && <p style={{ marginTop: 6, fontSize: 11, color: 'var(--warn)' }}>Unsaved changes</p>}
+        </div>
+
+        <div className="info-card">
+          <p style={{ margin: 0 }}><strong>Why canned messages?</strong> Typing on a T-Deck keyboard or finding a radio while moving is awkward. Pre-canned text lets you send a useful update with one tap. Common operator phrases (QSL, 73, ROGER, ETA) also fit in fewer bytes than full English sentences.</p>
         </div>
       </div>
     </div>

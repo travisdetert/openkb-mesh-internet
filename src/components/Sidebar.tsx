@@ -25,10 +25,10 @@ interface Props {
   onSelectConnection: (id: string | null) => void;
 }
 
-// 'app' header items (home + connect) are rendered specially at the top of
-// the sidebar — home is the brand link, connect is the status block. Other
-// 'app' entries (like Settings) appear under the Setup group below.
-const SPECIAL_APP_IDS = new Set<TabId>(['home', 'connect']);
+// Items rendered with their own hero treatment outside any group. Home is the
+// brand link at the top, Connect is the live-status block, and Chat is the
+// big "go-here-first" button — it's what the app is for.
+const SPECIAL_APP_IDS = new Set<TabId>(['home', 'connect', 'chat']);
 const GROUP_ORDER: Array<{ key: 'app' | 'live' | 'learn' | 'kb'; label: string }> = [
   { key: 'app', label: 'Setup' },
   { key: 'live', label: 'Live' },
@@ -92,6 +92,25 @@ export function Sidebar({
         {state.status === 'disconnected' && (
           <span className="status-stats" style={{ color: 'var(--text-faint)' }}>click to connect</span>
         )}
+      </button>
+
+      <button
+        key={chatPulseKey}
+        className={'sidebar-chat' + (active === 'chat' ? ' active' : '') + (unreadMessages > 0 ? ' has-unread' : '') + (isReady ? '' : ' dim')}
+        onClick={() => onSelect('chat')}
+        title={isReady ? 'Open the chat' : 'Connect a radio to start chatting'}
+      >
+        <div className="sidebar-chat-row">
+          <span className="sidebar-chat-label">Chat</span>
+          {unreadMessages > 0 && <span className="sidebar-chat-unread">{unreadMessages > 99 ? '99+' : unreadMessages}</span>}
+        </div>
+        <span className="sidebar-chat-sub">
+          {!isReady
+            ? 'connect a radio'
+            : unreadMessages > 0
+              ? `${unreadMessages} new message${unreadMessages === 1 ? '' : 's'}`
+              : 'all caught up'}
+        </span>
       </button>
 
       {connections.length > 1 && (
