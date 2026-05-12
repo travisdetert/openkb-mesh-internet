@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { PanelChannelHeader } from '../PanelChannelHeader';
 
 const BROADCAST = 0xffffffff;
 
@@ -91,6 +92,8 @@ export function PacketSnifferPanel({ packets, packetCount, nodes, state, onMessa
       <p className="page-sub">
         Every <code>FromRadio.packet</code> your radio decodes off the air, in real time. Filter, inspect, and export — useful for debugging propagation, channel encryption, or just understanding what your mesh is saying to itself.
       </p>
+
+      <PanelChannelHeader state={state} label="SNIFFING ON" />
 
       <div className="subnav">
         <button className={'subnav-btn' + (tab === 'stream' ? ' active' : '')} onClick={() => setTab('stream')}>

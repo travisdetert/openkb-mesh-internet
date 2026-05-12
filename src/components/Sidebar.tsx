@@ -29,9 +29,10 @@ interface Props {
 // brand link at the top, Connect is the live-status block, and Chat is the
 // big "go-here-first" button — it's what the app is for.
 const SPECIAL_APP_IDS = new Set<TabId>(['home', 'connect', 'chat']);
-const GROUP_ORDER: Array<{ key: 'app' | 'live' | 'learn' | 'kb'; label: string }> = [
+const GROUP_ORDER: Array<{ key: 'app' | 'live' | 'troubleshoot' | 'learn' | 'kb'; label: string }> = [
   { key: 'app', label: 'Setup' },
   { key: 'live', label: 'Live' },
+  { key: 'troubleshoot', label: 'Troubleshoot' },
   { key: 'learn', label: 'Learn' },
   { key: 'kb', label: 'Reference' },
 ];
@@ -153,7 +154,7 @@ export function Sidebar({
             <div key={key} className="sidebar-section">
               <div className="sidebar-section-label">{label}</div>
               {groupTabs.map((t) => {
-                const dim = key === 'live' && !isReady && requiresConnection(t.id);
+                const dim = (key === 'live' || key === 'troubleshoot') && !isReady && requiresConnection(t.id);
                 const badge = badges[t.id];
                 const isChat = t.id === 'chat';
                 const pulseAttr = isChat ? chatPulseKey : 0;

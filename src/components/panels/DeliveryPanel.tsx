@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { PanelChannelHeader } from '../PanelChannelHeader';
 
 const BROADCAST = 0xffffffff;
 
@@ -72,6 +73,8 @@ export function DeliveryPanel({ traces, nodes, state }: Props) {
       <p className="page-sub">
         Every outgoing message you send is tracked here from the moment your radio TX-confirms it, through every node that relays it, all the way to (or instead of) an ack. Use this when a message looks like it didn't get through — the trace shows you how far into the mesh it actually traveled.
       </p>
+
+      <PanelChannelHeader state={state} label="DELIVERY FROM" />
 
       {ordered.length === 0 ? (
         <div className="card">

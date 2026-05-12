@@ -6,11 +6,26 @@ import { estimateAirtimeSec, utf8Bytes, SOFT_BYTE_LIMIT, HARD_BYTE_LIMIT } from 
 import { loadCanned, saveCanned, resetCanned } from '../../lib/canned-messages';
 import { chunkText, parseChunk, assembleMessages, MAX_CHUNKS } from '../../lib/message-codec';
 import { maybeCompress, maybeDecompress, isCompressed } from '../../lib/text-compress';
+import { encodePayload, decodePayload, type DecodedPayload, type PositionPayload, type WaypointPayload, type ImageStub } from '../../lib/payload-types';
+import { ditherImage, decodeOneBitImage, renderOneBitImage, type DitheredImage } from '../../lib/image-codec';
+import { expandSmartText, parseSlashCommand, listShortcodes } from '../../lib/smart-text';
+import { SmartText } from '../SmartText';
+import { VoiceRecorder, packVoice, unpackVoice, type VoiceClip, VOICE_MAX_MS } from '../../lib/voice-codec';
 
 const BROADCAST = 0xffffffff;
 
 function shortHex(num: number): string {
   return '!' + (num >>> 0).toString(16).padStart(8, '0').slice(-4);
+}
+
+function labelForPosition(p: PositionPayload): string {
+  const coords = `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`;
+  const alt = p.alt ? ` · ${p.alt} m` : '';
+  const cap = p.caption ? ` — "${p.caption}"` : '';
+  return `[location ${coords}${alt}]${cap}`;
+}
+function labelForWaypoint(p: WaypointPayload): string {
+  return `[waypoint "${p.name}" @ ${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}]${p.description ? ` — ${p.description}` : ''}`;
 }
 
 function nameFor(nodes: NodeRecord[], num: number): string {
@@ -288,6 +303,13 @@ export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) 
   const [ackOverride, setAckOverride] = useState<'auto' | 'on' | 'off'>('auto');
   // Canned-message list (persisted in localStorage).
   const [canned, setCanned] = useState<string[]>(() => loadCanned());
+  // Reply-to: when set, the next send is prefixed with a single-line quote.
+  const [replyTarget, setReplyTarget] = useState<TextMessage | null>(null);
+  // Search query across ALL messages in ALL conversations. When set, the
+  // conversation-list pane shows flat search results instead of the convo list.
+  const [searchQuery, setSearchQuery] = useState('');
+  // "New DM" picker visibility.
+  const [newDmOpen, setNewDmOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const convos = useMemo(() => buildConvoList(messages, nodes, state, lastViewed), [messages, nodes, state, lastViewed]);
@@ -325,18 +347,27 @@ export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) 
   // "sending 3/5 chunks…" instead of a frozen Send button.
   const [sendProgress, setSendProgress] = useState<{ index: number; total: number; airtimeRemainingSec: number } | null>(null);
 
-  const send = async (overrideText?: string) => {
-    const payload = (overrideText ?? text).trim();
-    if (!payload || state.status !== 'ready' || !effective || !connId) return;
+  /**
+   * Inner send pipeline: takes any typed payload, runs it through encode →
+   * compress → (chunk if needed) → radio. All non-text content types
+   * (position, waypoint, future voice/image/gpx) flow through this exact
+   * pipeline; only the encode step differs.
+   */
+  const sendPayload = async (p: DecodedPayload) => {
+    if (state.status !== 'ready' || !effective || !connId) return;
     setSending(true);
 
-    // Compress first — if it wins, we may even drop chunks. The result is
-    // either the original payload (compression skipped because it didn't help)
-    // or a compressed string carrying the \x01Z| prefix.
-    const compression = await maybeCompress(payload);
+    // 1. Encode the typed payload to a wire string (\x01<type>|<base64>)
+    //    Text payloads pass through unchanged for backwards compatibility.
+    const wire = encodePayload(p);
+
+    // 2. Try to compress. The result is either the same string (no win)
+    //    or a "\x01Z|<base64>" wrapper around the deflate output.
+    const compression = await maybeCompress(wire);
     const wirePayload = compression.payload;
     const bytes = compression.wireBytes;
     const needsChunking = bytes > HARD_BYTE_LIMIT;
+
     const sendOne = async (textPayload: string) => {
       if (effective.kind === 'channel') {
         await window.mesh.sendText({ connId, text: textPayload, channel: effective.index, wantAck: wantAckEffective() });
@@ -373,12 +404,113 @@ export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) 
           }
         }
       }
-      if (overrideText === undefined) setText('');
     } finally {
       setSending(false);
       setSendProgress(null);
     }
   };
+
+  /** Outer wrapper for sending the typed text in the compose box. */
+  const send = async (overrideText?: string) => {
+    let base = (overrideText ?? text).trim();
+    if (!base) return;
+
+    // 1. Slash commands — some are pure side effects (no send), some
+    //    transform the text before send.
+    const slash = parseSlashCommand(base);
+    if (slash) {
+      switch (slash.kind) {
+        case 'me': {
+          const myShort = nodes.find((n) => n.num === myNum)?.shortName || 'me';
+          base = `* ${myShort} ${slash.action}`.trim();
+          break;
+        }
+        case 'position':
+          await sharePosition();
+          if (overrideText === undefined) setText('');
+          return;
+        case 'help':
+          setActiveTab('help');
+          if (overrideText === undefined) setText('');
+          return;
+        case 'shortcodes':
+          // Pop the help tab and let the user scroll to the shortcodes list.
+          setActiveTab('help');
+          if (overrideText === undefined) setText('');
+          return;
+        case 'unknown':
+          // Unknown commands fall through and get sent literally — user might
+          // be referring to something the other side understands.
+          break;
+      }
+    }
+
+    // 2. Expand emoji shortcodes + phrase macros.
+    base = expandSmartText(base);
+
+    // 3. If replying, prepend a one-line quote.
+    let payload = base;
+    if (replyTarget) {
+      const quoted = replyTarget.text.replace(/\n/g, ' ').slice(0, 40);
+      const suffix = replyTarget.text.length > 40 ? '…' : '';
+      payload = `> ${quoted}${suffix}\n${base}`;
+    }
+    await sendPayload({ type: 'text', text: payload });
+    if (overrideText === undefined) setText('');
+    setReplyTarget(null);
+  };
+
+  /** Mark every conversation as read (resets all unread counters). */
+  const markAllRead = () => {
+    const now = Date.now();
+    setLastViewed((prev) => {
+      const next = { ...prev };
+      for (const c of convos) next[c.key] = now;
+      return next;
+    });
+  };
+
+  // ── Desktop notifications ─────────────────────────────────────────
+  // Fire an OS notification when a new message arrives from someone other
+  // than us AND we're not currently looking at that conversation. The
+  // browser's Notification permission is requested lazily on first arrival.
+  const lastMessageIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (messages.length === 0) return;
+    const newest = messages[messages.length - 1];
+    if (lastMessageIdRef.current === null) {
+      // First render — just record where we are; don't notify on startup.
+      lastMessageIdRef.current = newest.id;
+      return;
+    }
+    if (newest.id === lastMessageIdRef.current) return;
+    lastMessageIdRef.current = newest.id;
+
+    if (newest.from === myNum) return; // our own echo
+    // Skip the notification if the user is already looking at the thread.
+    if (effective) {
+      const sameDm = effective.kind === 'dm' && newest.to !== 0xffffffff && (newest.from === effective.nodeNum || newest.to === effective.nodeNum);
+      const sameChannel = effective.kind === 'channel' && newest.to === 0xffffffff && newest.channel === effective.index;
+      if ((sameDm || sameChannel) && activeTab === 'conversations') return;
+    }
+
+    if (typeof Notification === 'undefined') return;
+    const fire = () => {
+      const senderLabel = nameFor(nodes, newest.from);
+      const where = newest.to === 0xffffffff ? `# channel ${newest.channel}` : 'DM';
+      // Strip a leading reply quote for the preview so the user sees the real content.
+      const preview = newest.text.startsWith('> ') ? newest.text.split('\n').slice(1).join(' ') : newest.text;
+      try {
+        new Notification(`${senderLabel} · ${where}`, {
+          body: preview.slice(0, 120),
+          silent: false,
+        });
+      } catch { /* ignore */ }
+    };
+    if (Notification.permission === 'granted') fire();
+    else if (Notification.permission !== 'denied') Notification.requestPermission().then((p) => p === 'granted' && fire());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages]);
 
   // Persist canned-message edits + provide a setter that auto-saves.
   const updateCanned = (next: string[]) => {
@@ -386,13 +518,113 @@ export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) 
     saveCanned(next);
   };
 
-  // Insert my current position into the draft as a compact "@lat,lon" string.
-  const insertPosition = () => {
+  /**
+   * Share the connected radio's current position as a compact typed payload.
+   * The optional caption from the compose box is included inline (so the
+   * receiver sees one bubble with coordinates AND your note).
+   */
+  const sharePosition = async () => {
     const myNode = nodes.find((n) => n.num === myNum);
     if (!myNode || myNode.lat === undefined || myNode.lon === undefined) return;
-    const tag = ` @${myNode.lat.toFixed(5)},${myNode.lon.toFixed(5)}${myNode.altitude ? `h${Math.round(myNode.altitude)}m` : ''}`;
-    setText((text + tag).slice(0, HARD_BYTE_LIMIT));
+    const caption = text.trim() || undefined;
+    await sendPayload({
+      type: 'position',
+      lat: myNode.lat,
+      lon: myNode.lon,
+      alt: myNode.altitude,
+      caption,
+    });
+    if (caption) setText('');
   };
+
+  // Stage an image for sending. The picker dithers the source down to ~96×64
+  // 1-bit pixels and shows a preview; the user clicks Send to actually
+  // transmit. We keep it staged in state so the user can cancel or replace.
+  const [pendingImage, setPendingImage] = useState<DitheredImage | null>(null);
+  const [pickingImage, setPickingImage] = useState(false);
+  const pickImage = async (file: File) => {
+    setPickingImage(true);
+    try {
+      const img = await ditherImage(file);
+      setPendingImage(img);
+    } catch (e) {
+      console.error('image dither failed', e);
+    } finally {
+      setPickingImage(false);
+    }
+  };
+  const sendImage = async () => {
+    if (!pendingImage) return;
+    await sendPayload({ type: 'image', bytes: pendingImage.bytes });
+    setPendingImage(null);
+  };
+  const cancelImage = () => setPendingImage(null);
+
+  // Voice recording. The recorder lives outside React state since it owns
+  // a mic stream and the recorder object isn't serializable.
+  const voiceRecorderRef = useRef<VoiceRecorder | null>(null);
+  const [recordingVoice, setRecordingVoice] = useState(false);
+  const [recordingElapsed, setRecordingElapsed] = useState(0);
+  const [pendingVoice, setPendingVoice] = useState<VoiceClip | null>(null);
+
+  // Tick the elapsed-ms readout once a second while recording.
+  useEffect(() => {
+    if (!recordingVoice) return;
+    const t = setInterval(() => {
+      setRecordingElapsed(voiceRecorderRef.current?.elapsedMs() ?? 0);
+    }, 200);
+    return () => clearInterval(t);
+  }, [recordingVoice]);
+
+  const startVoice = async () => {
+    if (recordingVoice) return;
+    const rec = new VoiceRecorder();
+    voiceRecorderRef.current = rec;
+    try {
+      await rec.start({
+        onAutoStop: () => { void stopVoice(); },
+      });
+      setRecordingVoice(true);
+      setRecordingElapsed(0);
+    } catch (e) {
+      voiceRecorderRef.current = null;
+      const msg = (e instanceof Error ? e.message : String(e));
+      // Most common: permission denied. Surface a one-time alert.
+      console.warn('voice recording failed:', msg);
+      alert(`Couldn't start recording: ${msg}`);
+    }
+  };
+
+  const stopVoice = async () => {
+    const rec = voiceRecorderRef.current;
+    if (!rec) return;
+    try {
+      const clip = await rec.stop();
+      setPendingVoice(clip);
+    } catch (e) {
+      console.error('voice stop failed', e);
+    } finally {
+      voiceRecorderRef.current = null;
+      setRecordingVoice(false);
+      setRecordingElapsed(0);
+    }
+  };
+
+  const cancelRecording = () => {
+    voiceRecorderRef.current?.cancel();
+    voiceRecorderRef.current = null;
+    setRecordingVoice(false);
+    setRecordingElapsed(0);
+  };
+
+  const sendVoice = async () => {
+    if (!pendingVoice) return;
+    const bytes = packVoice(pendingVoice);
+    await sendPayload({ type: 'voice', bytes, durationMs: pendingVoice.durationMs });
+    setPendingVoice(null);
+  };
+
+  const cancelVoice = () => setPendingVoice(null);
 
   const resend = async (m: TextMessage) => {
     if (state.status !== 'ready' || !connId) return;
@@ -493,7 +725,27 @@ export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) 
           canned={canned}
           ackOverride={ackOverride}
           setAckOverride={setAckOverride}
-          insertPosition={insertPosition}
+          sharePosition={sharePosition}
+          pendingImage={pendingImage}
+          pickImage={pickImage}
+          sendImage={sendImage}
+          cancelImage={cancelImage}
+          pickingImage={pickingImage}
+          recordingVoice={recordingVoice}
+          recordingElapsed={recordingElapsed}
+          pendingVoice={pendingVoice}
+          startVoice={startVoice}
+          stopVoice={stopVoice}
+          cancelRecording={cancelRecording}
+          sendVoice={sendVoice}
+          cancelVoice={cancelVoice}
+          replyTarget={replyTarget}
+          setReplyTarget={setReplyTarget}
+          searchQuery={searchQuery}
+          setSearchQuery={setSearchQuery}
+          newDmOpen={newDmOpen}
+          setNewDmOpen={setNewDmOpen}
+          markAllRead={markAllRead}
         />
       )}
       {activeTab === 'activity' && (
@@ -548,13 +800,92 @@ interface ConversationsProps {
   canned: string[];
   ackOverride: 'auto' | 'on' | 'off';
   setAckOverride: (v: 'auto' | 'on' | 'off') => void;
-  insertPosition: () => void;
+  sharePosition: () => void;
+  pendingImage: DitheredImage | null;
+  pickImage: (file: File) => void;
+  sendImage: () => void;
+  cancelImage: () => void;
+  pickingImage: boolean;
+  recordingVoice: boolean;
+  recordingElapsed: number;
+  pendingVoice: VoiceClip | null;
+  startVoice: () => void;
+  stopVoice: () => void;
+  cancelRecording: () => void;
+  sendVoice: () => void;
+  cancelVoice: () => void;
+  replyTarget: TextMessage | null;
+  setReplyTarget: (m: TextMessage | null) => void;
+  searchQuery: string;
+  setSearchQuery: (q: string) => void;
+  newDmOpen: boolean;
+  setNewDmOpen: (v: boolean) => void;
+  markAllRead: () => void;
+}
+
+/**
+ * Inline node picker for starting a new DM. Filterable by short/long name or
+ * hex id. Excludes the user's own node from the list.
+ */
+function NewDmPicker({
+  nodes, myNum, onPick, onClose,
+}: {
+  nodes: NodeRecord[];
+  myNum: number;
+  onPick: (num: number) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const filtered = useMemo(() => {
+    const q = query.toLowerCase();
+    return nodes
+      .filter((n) => n.num !== myNum)
+      .filter((n) => !q || n.shortName?.toLowerCase().includes(q) || n.longName?.toLowerCase().includes(q) || shortHex(n.num).toLowerCase().includes(q))
+      // Most-recently-heard first
+      .sort((a, b) => (b.lastHeard ?? 0) - (a.lastHeard ?? 0))
+      .slice(0, 30);
+  }, [nodes, query, myNum]);
+
+  return (
+    <div className="new-dm-picker">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+        <input
+          className="text"
+          autoFocus
+          placeholder="filter by name or id…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          style={{ flex: 1, fontSize: 12 }}
+        />
+        <button className="ghost" onClick={onClose} style={{ padding: '3px 8px', fontSize: 11 }}>✕</button>
+      </div>
+      <div className="new-dm-list">
+        {filtered.length === 0 && (
+          <div className="empty" style={{ padding: 10, fontSize: 11 }}>No matching nodes yet.</div>
+        )}
+        {filtered.map((n) => (
+          <button
+            key={n.num}
+            className="new-dm-item"
+            onClick={() => onPick(n.num)}
+          >
+            <span className="new-dm-short" style={{ color: senderColor(n.num) }}>{n.shortName || '????'}</span>
+            <span className="new-dm-long">{n.longName || shortHex(n.num)}</span>
+            {n.lastHeard && <span className="new-dm-time">{relTime(n.lastHeard)}</span>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function _Conversations({
   convos, effective, setTarget, filtered, messages, nodes, state, myNum,
   text, setText, send, sending, sendProgress, resend, scrollRef, composeRef,
-  canned, ackOverride, setAckOverride, insertPosition,
+  canned, ackOverride, setAckOverride, sharePosition,
+  pendingImage, pickImage, sendImage, cancelImage, pickingImage,
+  recordingVoice, recordingElapsed, pendingVoice, startVoice, stopVoice, cancelRecording, sendVoice, cancelVoice,
+  replyTarget, setReplyTarget, searchQuery, setSearchQuery, newDmOpen, setNewDmOpen, markAllRead,
 }: ConversationsProps & { composeRef: React.RefObject<HTMLTextAreaElement> }) {
   const connId = useActiveConnId();
   const [cannedOpen, setCannedOpen] = useState(false);
@@ -589,40 +920,119 @@ function _Conversations({
       ? `Message ${nameFor(nodes, effective.nodeNum)}…`
       : 'Send to channel…';
 
+  // Flat search results when searchQuery is non-empty — across every conversation.
+  const searchResults = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const q = searchQuery.toLowerCase();
+    return messages
+      .filter((m) => m.text.toLowerCase().includes(q))
+      .slice(-50)
+      .reverse();
+  }, [messages, searchQuery]);
+
+  const totalUnread = convos.reduce((s, c) => s + c.unread, 0);
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16, alignItems: 'stretch' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 16, alignItems: 'stretch' }}>
       <div className="card" style={{ padding: 6, minHeight: 0 }}>
-        <div style={{ fontSize: 10.5, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.06em', padding: '6px 8px' }}>
-          Channels & DMs
-        </div>
-        {convos.length === 0 && <div className="empty" style={{ padding: 12 }}>No channels yet.</div>}
-        {convos.map((c) => {
-          const active = effective && (
-            (effective.kind === 'channel' && c.target.kind === 'channel' && effective.index === c.target.index) ||
-            (effective.kind === 'dm' && c.target.kind === 'dm' && effective.nodeNum === c.target.nodeNum)
-          );
-          const accent = c.target.kind === 'dm' ? senderColor(c.target.nodeNum) : 'var(--text)';
-          return (
+        <div className="convo-toolbar">
+          <input
+            className="text convo-search"
+            placeholder="Search messages…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+          <div className="convo-toolbar-buttons">
             <button
-              key={c.key}
-              onClick={() => setTarget(c.target)}
-              className={'convo-item' + (active ? ' active' : '')}
+              className="ghost convo-toolbar-btn"
+              onClick={() => setNewDmOpen(!newDmOpen)}
+              title="Start a DM with any node you've heard from"
             >
-              <div className="convo-row">
-                <span className="convo-label" style={{ color: active ? 'var(--accent)' : accent }}>
-                  {c.target.kind === 'channel' ? `# ${c.label}` : c.label}
-                </span>
-                {c.lastTs > 0 && <span className="convo-time">{relTime(c.lastTs)}</span>}
-                {c.unread > 0 && <span className="convo-unread">{c.unread}</span>}
-              </div>
-              <div className="convo-preview">
-                {c.lastText
-                  ? <>{c.lastFromMe ? <span className="convo-prev-sender">me:</span> : <span className="convo-prev-sender">{c.lastSender}:</span>} {c.lastText}</>
-                  : <span style={{ color: 'var(--text-faint)' }}>{c.sub}</span>}
-              </div>
+              + DM
             </button>
-          );
-        })}
+            {totalUnread > 0 && (
+              <button
+                className="ghost convo-toolbar-btn"
+                onClick={markAllRead}
+                title="Clear all unread badges"
+              >
+                ✓ all read
+              </button>
+            )}
+          </div>
+        </div>
+
+        {newDmOpen && (
+          <NewDmPicker
+            nodes={nodes}
+            myNum={myNum}
+            onPick={(num) => { setTarget({ kind: 'dm', nodeNum: num }); setNewDmOpen(false); }}
+            onClose={() => setNewDmOpen(false)}
+          />
+        )}
+
+        {/* When searching, replace the convo list with flat results across all conversations */}
+        {searchQuery.trim() ? (
+          <div className="convo-search-results">
+            <div style={{ fontSize: 10.5, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.06em', padding: '6px 8px' }}>
+              {searchResults.length} match{searchResults.length === 1 ? '' : 'es'}
+            </div>
+            {searchResults.length === 0 && <div className="empty" style={{ padding: 12 }}>No matches.</div>}
+            {searchResults.map((m) => {
+              const isMe = m.from === myNum;
+              const isBroadcast = m.to === 0xffffffff;
+              const whereTarget: ChatTarget = isBroadcast
+                ? { kind: 'channel', index: m.channel }
+                : { kind: 'dm', nodeNum: isMe ? m.to : m.from };
+              const whereLabel = isBroadcast ? `# ch ${m.channel}` : `${isMe ? 'to ' : 'from '}${nameFor(nodes, isMe ? m.to : m.from)}`;
+              // Highlight the matched substring within the preview.
+              return (
+                <button
+                  key={`sr-${m.id}-${m.from}-${m.rxTime}`}
+                  className="convo-search-result"
+                  onClick={() => { setTarget(whereTarget); setSearchQuery(''); }}
+                >
+                  <div className="convo-search-result-where">{whereLabel} · {relTime(m.rxTime)}</div>
+                  <div className="convo-search-result-text">{m.text}</div>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize: 10.5, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.06em', padding: '6px 8px' }}>
+              Channels & DMs
+            </div>
+            {convos.length === 0 && <div className="empty" style={{ padding: 12 }}>No channels yet.</div>}
+            {convos.map((c) => {
+              const active = effective && (
+                (effective.kind === 'channel' && c.target.kind === 'channel' && effective.index === c.target.index) ||
+                (effective.kind === 'dm' && c.target.kind === 'dm' && effective.nodeNum === c.target.nodeNum)
+              );
+              const accent = c.target.kind === 'dm' ? senderColor(c.target.nodeNum) : 'var(--text)';
+              return (
+                <button
+                  key={c.key}
+                  onClick={() => setTarget(c.target)}
+                  className={'convo-item' + (active ? ' active' : '')}
+                >
+                  <div className="convo-row">
+                    <span className="convo-label" style={{ color: active ? 'var(--accent)' : accent }}>
+                      {c.target.kind === 'channel' ? `# ${c.label}` : c.label}
+                    </span>
+                    {c.lastTs > 0 && <span className="convo-time">{relTime(c.lastTs)}</span>}
+                    {c.unread > 0 && <span className="convo-unread">{c.unread}</span>}
+                  </div>
+                  <div className="convo-preview">
+                    {c.lastText
+                      ? <>{c.lastFromMe ? <span className="convo-prev-sender">me:</span> : <span className="convo-prev-sender">{c.lastSender}:</span>} {c.lastText}</>
+                      : <span style={{ color: 'var(--text-faint)' }}>{c.sub}</span>}
+                  </div>
+                </button>
+              );
+            })}
+          </>
+        )}
       </div>
 
       <div className="card" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -682,7 +1092,7 @@ function _Conversations({
           {filtered.length === 0 ? (
             <EmptyExplainer state={state} effective={effective} totalMessages={messages.length} />
           ) : (
-            <AssembledMessageList filtered={filtered} nodes={nodes} myNum={myNum} onResend={resend} />
+            <AssembledMessageList filtered={filtered} nodes={nodes} myNum={myNum} onResend={resend} onReply={setReplyTarget} />
           )}
         </div>
 
@@ -702,6 +1112,45 @@ function _Conversations({
           </div>
         )}
 
+        {replyTarget && (
+          <div className="reply-chip">
+            <div className="reply-chip-bar" />
+            <div className="reply-chip-body">
+              <div className="reply-chip-label">REPLYING TO {nameFor(nodes, replyTarget.from)}</div>
+              <div className="reply-chip-text">{replyTarget.text.replace(/\n/g, ' ').slice(0, 80)}{replyTarget.text.length > 80 ? '…' : ''}</div>
+            </div>
+            <button className="ghost reply-chip-close" onClick={() => setReplyTarget(null)} title="Cancel reply">✕</button>
+          </div>
+        )}
+
+        {pendingImage && (
+          <ImagePreviewBar
+            image={pendingImage}
+            onSend={sendImage}
+            onCancel={cancelImage}
+            sending={sending}
+            loraConfig={state.loraConfig}
+          />
+        )}
+
+        {recordingVoice && (
+          <VoiceRecordingIndicator
+            elapsedMs={recordingElapsed}
+            onStop={stopVoice}
+            onCancel={cancelRecording}
+          />
+        )}
+
+        {pendingVoice && (
+          <VoicePreviewBar
+            clip={pendingVoice}
+            onSend={sendVoice}
+            onCancel={cancelVoice}
+            sending={sending}
+            loraConfig={state.loraConfig}
+          />
+        )}
+
         <RichCompose
           composeRef={composeRef}
           text={text}
@@ -718,7 +1167,11 @@ function _Conversations({
           setCannedOpen={setCannedOpen}
           ackOverride={ackOverride}
           setAckOverride={setAckOverride}
-          insertPosition={insertPosition}
+          sharePosition={sharePosition}
+          pickImage={pickImage}
+          pickingImage={pickingImage}
+          startVoice={startVoice}
+          recordingVoice={recordingVoice}
         />
       </div>
     </div>
@@ -731,7 +1184,8 @@ function _Conversations({
 
 function RichCompose({
   composeRef, text, setText, send, sending, state, effective, placeholder,
-  nodes, myNum, canned, cannedOpen, setCannedOpen, ackOverride, setAckOverride, insertPosition,
+  nodes, myNum, canned, cannedOpen, setCannedOpen, ackOverride, setAckOverride, sharePosition,
+  pickImage, pickingImage, startVoice, recordingVoice,
 }: {
   composeRef: React.RefObject<HTMLTextAreaElement>;
   text: string;
@@ -748,8 +1202,14 @@ function RichCompose({
   setCannedOpen: (v: boolean) => void;
   ackOverride: 'auto' | 'on' | 'off';
   setAckOverride: (v: 'auto' | 'on' | 'off') => void;
-  insertPosition: () => void;
+  sharePosition: () => void;
+  pickImage: (file: File) => void;
+  pickingImage: boolean;
+  startVoice: () => void;
+  recordingVoice: boolean;
 }) {
+  // Hidden file input used by the "+ Image" toolbar button.
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const bytes = utf8Bytes(text);
   // Live "what would compression do?" preview. We re-run maybeCompress as the
   // user types (debounced via React's render batching). It's cheap for chat-
@@ -844,12 +1304,39 @@ function RichCompose({
           </button>
           <button
             className="ghost compose-action"
-            onClick={insertPosition}
+            onClick={sharePosition}
             disabled={!canInsertPosition || state.status !== 'ready' || !effective}
-            title={canInsertPosition ? 'Append your current @lat,lon to the message' : 'No position from your radio yet'}
+            title={canInsertPosition ? 'Send your current location as a compact typed payload (12 bytes vs ~50 for text). Caption in the compose box is sent inline.' : 'No position from your radio yet'}
           >
-            + Position
+            Share location
           </button>
+          <button
+            className="ghost compose-action"
+            onClick={() => imageInputRef.current?.click()}
+            disabled={state.status !== 'ready' || !effective || pickingImage}
+            title="Pick a photo. The app downscales to ~96×64 and dithers to 1 bit before sending — typical 3-4 chunks on air."
+          >
+            {pickingImage ? 'Dithering…' : '+ Image'}
+          </button>
+          <button
+            className="ghost compose-action"
+            onClick={startVoice}
+            disabled={state.status !== 'ready' || !effective || recordingVoice}
+            title={`Record a voice message (max ${VOICE_MAX_MS / 1000}s). Encoded with Opus at 6 kbps — speech-grade but uses several chunks of airtime per second of audio.`}
+          >
+            ● Voice
+          </button>
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) pickImage(file);
+              e.currentTarget.value = ''; // allow picking the same file again
+            }}
+          />
           <label
             className={'compose-toggle' + (ackActive ? ' on' : '') + (!ackEditable ? ' dim' : '')}
             title="Request a routing ack from the destination. Default: on for DMs, off for broadcasts."
@@ -924,19 +1411,23 @@ function RichCompose({
   );
 }
 
-/** TextMessage with optional chunked-assembly + compression metadata. */
+/** TextMessage with optional chunked-assembly + compression + typed-payload metadata. */
 interface DisplayMessage extends TextMessage {
   _chunkInfo?: { total: number; received: number; bytes: number; complete: boolean };
   _compression?: { wireBytes: number; decompressedBytes: number };
+  /** Decoded typed payload (position / waypoint / voice / image / gpx).
+   *  Absent for plain text. */
+  _payload?: DecodedPayload;
 }
 
 function AssembledMessageList({
-  filtered, nodes, myNum, onResend,
+  filtered, nodes, myNum, onResend, onReply,
 }: {
   filtered: TextMessage[];
   nodes: NodeRecord[];
   myNum: number;
   onResend: (m: TextMessage) => void;
+  onReply: (m: TextMessage) => void;
 }) {
   // Cache of decompression results keyed by compressed text. Compression is
   // deterministic, so the same wire payload always inflates to the same plain
@@ -976,6 +1467,11 @@ function AssembledMessageList({
       const plain = compressed ? (decompressed.get(a.text) ?? '(decompressing…)') : a.text;
       const decompressedBytes = compressed ? new TextEncoder().encode(plain).length : wireBytes;
 
+      // Decode the typed-payload header. For raw text, this returns
+      // { type: 'text', text } which we just display normally. For position /
+      // waypoint / etc., the bubble renders specially.
+      const decoded = a.complete ? decodePayload(plain) : undefined;
+
       // Combine ackStatus across chunks.
       let ackStatus: TextMessage['ackStatus'] = a.representative.ackStatus;
       if (a.parts.length > 1) {
@@ -985,9 +1481,21 @@ function AssembledMessageList({
       }
 
       const first = a.parts[0];
+      // For non-text typed payloads, set the bubble's `text` to a one-line
+      // human label so even minimal renderers show something useful.
       const text = !a.complete
         ? `${a.text}\n[receiving ${a.received}/${a.total} chunks…]`
-        : plain;
+        : decoded?.type === 'position'
+          ? labelForPosition(decoded)
+          : decoded?.type === 'waypoint'
+            ? labelForWaypoint(decoded)
+            : decoded?.type === 'voice'
+              ? `[voice message · ${decoded.bytes.length} B]`
+              : decoded?.type === 'image'
+                ? `[image · ${decoded.bytes.length} B]`
+                : decoded?.type === 'gpx'
+                  ? `[GPX track · ${decoded.bytes.length} B]`
+                  : plain;
 
       return {
         ...first,
@@ -995,19 +1503,21 @@ function AssembledMessageList({
         ackStatus,
         _chunkInfo: a.chunked ? { total: a.total, received: a.received, bytes: wireBytes, complete: a.complete } : undefined,
         _compression: compressed ? { wireBytes, decompressedBytes } : undefined,
+        _payload: decoded && decoded.type !== 'text' ? decoded : undefined,
       };
     });
   }, [assembledList, decompressed]);
-  return <MessageList messages={display} nodes={nodes} myNum={myNum} onResend={onResend} />;
+  return <MessageList messages={display} nodes={nodes} myNum={myNum} onResend={onResend} onReply={onReply} />;
 }
 
 function MessageList({
-  messages, nodes, myNum, onResend,
+  messages, nodes, myNum, onResend, onReply,
 }: {
   messages: DisplayMessage[];
   nodes: NodeRecord[];
   myNum: number;
   onResend: (m: TextMessage) => void;
+  onReply: (m: TextMessage) => void;
 }) {
   const items: React.ReactNode[] = [];
   let prevDay = '';
@@ -1040,6 +1550,7 @@ function MessageList({
         attachedTop={grouped}
         attachedBottom={!!hasNextSame}
         onResend={onResend}
+        onReply={onReply}
       />,
     );
     prevFrom = m.from;
@@ -1049,7 +1560,7 @@ function MessageList({
 }
 
 function ChatBubble({
-  m, nodes, isMe, showHeader, attachedTop, attachedBottom, onResend,
+  m, nodes, isMe, showHeader, attachedTop, attachedBottom, onResend, onReply,
 }: {
   m: DisplayMessage;
   nodes: NodeRecord[];
@@ -1058,7 +1569,15 @@ function ChatBubble({
   attachedTop: boolean;
   attachedBottom: boolean;
   onResend: (m: TextMessage) => void;
+  onReply: (m: TextMessage) => void;
 }) {
+  // If the message starts with "> " on its first line, split that off as a
+  // styled quote block. This is the same convention every chat app uses
+  // and adds zero metadata to the wire payload.
+  const lines = m.text.split('\n');
+  const firstLineIsQuote = lines.length > 1 && lines[0].startsWith('> ');
+  const quoteText = firstLineIsQuote ? lines[0].slice(2).trim() : '';
+  const bodyText = firstLineIsQuote ? lines.slice(1).join('\n') : m.text;
   const sender = isMe ? 'me' : nameFor(nodes, m.from);
   const color = isMe ? 'var(--good)' : senderColor(m.from);
   const ack = m.ackStatus;
@@ -1078,7 +1597,25 @@ function ChatBubble({
         style={!isMe ? { borderLeft: `2px solid ${color}` } : undefined}
         title={`packet !${m.id.toString(16).padStart(8, '0')} · ${new Date(m.rxTime * 1000).toLocaleString()}`}
       >
-        <div className="chat-text">{m.text}</div>
+        {m._payload?.type === 'position' ? (
+          <PositionCard p={m._payload} />
+        ) : m._payload?.type === 'waypoint' ? (
+          <WaypointCard p={m._payload} />
+        ) : m._payload?.type === 'image' ? (
+          <ImageCard p={m._payload} />
+        ) : m._payload?.type === 'voice' ? (
+          <VoiceCard bytes={m._payload.bytes} />
+        ) : (
+          <>
+            {quoteText && (
+              <div className="chat-quote">
+                <span className="chat-quote-bar" />
+                <span className="chat-quote-text">{quoteText}</span>
+              </div>
+            )}
+            <div className="chat-text"><SmartText text={bodyText} /></div>
+          </>
+        )}
         {isLastInGroup && (
           <div className="chat-meta">
             {!isMe && m.rxRssi !== 0 && <span>{m.rxRssi} dBm</span>}
@@ -1112,6 +1649,13 @@ function ChatBubble({
               <span className="ack ack-failed">✗ {failure?.label ?? 'failed'}</span>
             )}
             {isMe && failed && <button className="resend-btn" onClick={() => onResend(m)}>resend</button>}
+            <button
+              className="reply-btn"
+              onClick={() => onReply(m)}
+              title="Quote this message in your next reply"
+            >
+              reply
+            </button>
           </div>
         )}
         {isLastInGroup && failed && failure && (
@@ -1124,6 +1668,271 @@ function ChatBubble({
             )}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function PositionCard({ p }: { p: PositionPayload }) {
+  return (
+    <div className="payload-card payload-card-position">
+      <div className="payload-card-head">SHARED LOCATION</div>
+      <div className="payload-card-body">
+        <div className="payload-coord">{p.lat.toFixed(5)}, {p.lon.toFixed(5)}</div>
+        {p.alt !== undefined && p.alt !== 0 && (
+          <div className="payload-sub">altitude {p.alt} m</div>
+        )}
+        {p.caption && <div className="payload-caption">"{p.caption}"</div>}
+      </div>
+      <div className="payload-card-actions">
+        <a
+          className="payload-link"
+          href={`https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lon}#map=14/${p.lat}/${p.lon}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open in OSM
+        </a>
+        <a
+          className="payload-link"
+          href={`https://maps.apple.com/?q=${p.lat},${p.lon}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Apple Maps
+        </a>
+      </div>
+    </div>
+  );
+}
+
+function ImagePreviewBar({
+  image, onSend, onCancel, sending, loraConfig,
+}: {
+  image: DitheredImage;
+  onSend: () => void;
+  onCancel: () => void;
+  sending: boolean;
+  loraConfig?: ConnectionState['loraConfig'];
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const c = canvasRef.current;
+    if (!c) return;
+    const decoded = decodeOneBitImage(image.bytes);
+    if (decoded) renderOneBitImage(c, decoded, 3);
+  }, [image]);
+
+  const wireBytes = image.bytes.length; // pre-base64 estimate
+  const expectedChunks = Math.max(1, Math.ceil((wireBytes * 4 / 3 + 3) / 200));
+  const airtimeSec = expectedChunks * estimateAirtimeSec(200, loraConfig?.modemPresetName, loraConfig?.spreadFactor, loraConfig?.bandwidth);
+
+  return (
+    <div className="image-preview-bar">
+      <canvas ref={canvasRef} className="image-preview-canvas" />
+      <div className="image-preview-meta">
+        <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-dim)' }}>
+          {image.width}×{image.height} · {wireBytes} B raw
+        </div>
+        <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-faint)' }}>
+          ≈ {expectedChunks} chunk{expectedChunks === 1 ? '' : 's'} · ~{airtimeSec.toFixed(1)}s air
+        </div>
+      </div>
+      <div className="image-preview-actions">
+        <button className="primary" onClick={onSend} disabled={sending}>{sending ? 'Sending…' : 'Send image'}</button>
+        <button className="ghost" onClick={onCancel} disabled={sending}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function VoiceRecordingIndicator({
+  elapsedMs, onStop, onCancel,
+}: {
+  elapsedMs: number;
+  onStop: () => void;
+  onCancel: () => void;
+}) {
+  const sec = (elapsedMs / 1000).toFixed(1);
+  const max = (VOICE_MAX_MS / 1000).toFixed(0);
+  return (
+    <div className="voice-recording-bar">
+      <span className="voice-recording-dot" />
+      <div className="voice-recording-meta">
+        <div className="voice-recording-label">RECORDING</div>
+        <div className="voice-recording-time">{sec} s / {max} s max</div>
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button className="primary" onClick={onStop}>Stop &amp; preview</button>
+        <button className="ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function VoicePreviewBar({
+  clip, onSend, onCancel, sending, loraConfig,
+}: {
+  clip: VoiceClip;
+  onSend: () => void;
+  onCancel: () => void;
+  sending: boolean;
+  loraConfig?: ConnectionState['loraConfig'];
+}) {
+  const wireBytes = clip.audio.length + 3; // header
+  const base64Bytes = Math.ceil(wireBytes * 4 / 3);
+  const expectedChunks = Math.max(1, Math.ceil(base64Bytes / 200));
+  const airtime = expectedChunks * estimateAirtimeSec(200, loraConfig?.modemPresetName, loraConfig?.spreadFactor, loraConfig?.bandwidth);
+  const sec = (clip.durationMs / 1000).toFixed(1);
+
+  // Empty / near-empty captures mean the mic never delivered data — almost
+  // always a permission issue. Surface it up-front so the user doesn't send
+  // silence and wonder why nobody can hear them.
+  const looksEmpty = clip.audio.length < 200;
+
+  return (
+    <div className={'voice-preview-bar' + (looksEmpty ? ' voice-preview-empty' : '')}>
+      <VoicePlayer bytes={clip.audio} mimeType={clip.mimeType} compact />
+      <div className="voice-preview-meta">
+        {looksEmpty ? (
+          <>
+            <div style={{ color: 'var(--bad)', fontSize: 12, fontWeight: 600 }}>
+              No audio captured ({clip.audio.length} B)
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+              Mic permission may be blocked. macOS: System Settings → Privacy &amp; Security → Microphone → enable "Electron". If Electron isn't listed, open Terminal and run <code>tccutil reset Microphone</code>, then quit and relaunch — the OS will prompt fresh.
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-dim)' }}>
+              {sec}s · {wireBytes} B audio
+            </div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-faint)' }}>
+              ≈ {expectedChunks} chunks · ~{airtime.toFixed(1)}s air
+            </div>
+          </>
+        )}
+      </div>
+      <div className="voice-preview-actions">
+        <button className="primary" onClick={onSend} disabled={sending || looksEmpty}>{sending ? 'Sending…' : 'Send voice'}</button>
+        <button className="ghost" onClick={onCancel} disabled={sending}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Reusable play-or-pause button for an Opus-encoded clip. Owns the
+ * <audio> element + object URL lifecycle.
+ */
+function VoicePlayer({ bytes, mimeType, compact = false }: { bytes: Uint8Array; mimeType: string; compact?: boolean }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const urlRef = useRef<string | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  useEffect(() => {
+    // Cast through BlobPart — same TS strict-array-buffer dance we already
+    // deal with in text-compress.ts.
+    const blob = new Blob([bytes as BlobPart], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    urlRef.current = url;
+    const a = new Audio(url);
+    audioRef.current = a;
+    a.addEventListener('timeupdate', () => setProgress(a.currentTime));
+    a.addEventListener('loadedmetadata', () => setDuration(a.duration));
+    a.addEventListener('ended', () => { setPlaying(false); setProgress(0); });
+    return () => {
+      a.pause();
+      audioRef.current = null;
+      if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = null; }
+    };
+  }, [bytes, mimeType]);
+
+  const toggle = () => {
+    const a = audioRef.current;
+    if (!a) return;
+    if (playing) { a.pause(); setPlaying(false); }
+    else {
+      a.currentTime = 0;
+      a.play()
+        .then(() => { setPlaying(true); console.log(`[voice] play() started, duration=${a.duration}, src bytes=${bytes.length}`); })
+        .catch((err) => { console.error('[voice] play() rejected:', err.name, err.message); setPlaying(false); });
+    }
+  };
+
+  const pct = duration > 0 ? Math.min(100, (progress / duration) * 100) : 0;
+
+  return (
+    <div className={'voice-player' + (compact ? ' compact' : '')}>
+      <button className="voice-play-btn" onClick={toggle} title={playing ? 'Pause' : 'Play'}>
+        {playing ? '❚❚' : '▶'}
+      </button>
+      <div className="voice-player-bar">
+        <div className="voice-player-fill" style={{ width: `${pct}%` }} />
+      </div>
+      {!compact && duration > 0 && (
+        <span className="voice-player-time">{progress.toFixed(1)}s / {duration.toFixed(1)}s</span>
+      )}
+    </div>
+  );
+}
+
+function VoiceCard({ bytes }: { bytes: Uint8Array }) {
+  const clip = useMemo(() => unpackVoice(bytes), [bytes]);
+  if (!clip) {
+    return (
+      <div className="payload-card payload-card-voice">
+        <div className="payload-card-head">VOICE · invalid payload</div>
+      </div>
+    );
+  }
+  const sec = (clip.durationMs / 1000).toFixed(1);
+  return (
+    <div className="payload-card payload-card-voice">
+      <div className="payload-card-head">VOICE · {sec}s · {bytes.length} B</div>
+      <VoicePlayer bytes={clip.audio} mimeType={clip.mimeType} />
+    </div>
+  );
+}
+
+function ImageCard({ p }: { p: ImageStub }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const c = canvasRef.current;
+    if (!c) return;
+    const decoded = decodeOneBitImage(p.bytes);
+    if (decoded) renderOneBitImage(c, decoded, 4);
+  }, [p]);
+  const decoded = decodeOneBitImage(p.bytes);
+  return (
+    <div className="payload-card payload-card-image">
+      <div className="payload-card-head">IMAGE · {decoded ? `${decoded.width}×${decoded.height}` : 'invalid'} · {p.bytes.length} B</div>
+      <canvas ref={canvasRef} className="image-card-canvas" />
+    </div>
+  );
+}
+
+function WaypointCard({ p }: { p: WaypointPayload }) {
+  return (
+    <div className="payload-card payload-card-waypoint">
+      <div className="payload-card-head">WAYPOINT</div>
+      <div className="payload-card-body">
+        <div className="payload-name">{p.name}</div>
+        <div className="payload-coord">{p.lat.toFixed(5)}, {p.lon.toFixed(5)}</div>
+        {p.description && <div className="payload-caption">{p.description}</div>}
+      </div>
+      <div className="payload-card-actions">
+        <a
+          className="payload-link"
+          href={`https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lon}#map=14/${p.lat}/${p.lon}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open in OSM
+        </a>
       </div>
     </div>
   );
@@ -1369,8 +2178,11 @@ function HelpView({ canned, updateCanned }: { canned: string[]; updateCanned: (n
           <dl className="kv kv-tight">
             <dt>Multi-packet chunking</dt><dd>Anything over ~230 bytes is split into chunks with a small reassembly header and sent sequentially. The receiver shows it as one bubble with a <span className="chunk-badge">N chunks · X B</span> tag.</dd>
             <dt>DEFLATE compression</dt><dd>Messages over 80 bytes are tried with DEFLATE + base64 before sending; if the result is smaller than the raw text, it goes on the wire and the receiver auto-inflates. Saves 15–30% on typical English chat. Bubble shows <span className="compress-badge">deflate −22%</span> when it kicks in.</dd>
+            <dt>Typed payloads</dt><dd>Beyond text, the app can ride any structured content through the same chunk + compress pipeline. Each payload starts with a 1-byte content-type marker:
+              <code> \x01P|</code> position, <code>\x01I|</code> image, <code>\x01V|</code> voice, <code>\x01W|</code> waypoint, <code>\x01G|</code> GPX track. Position, image, and voice are wired in today — waypoint and GPX are stubs ready to be filled in.</dd>
+            <dt>Voice messages</dt><dd>Hold-to-record up to 8 seconds; encoded with Opus at 6 kbps. A 3-second clip ≈ 2 KB ≈ 10 chunks (~10 s airtime on LongFast). A future swap to Codec2 (700 bps) would reduce that ~6×; the pipeline is identical so it's a one-file replacement.</dd>
             <dt>UTF-8-aware splitting</dt><dd>Chunks never break a multi-byte codepoint in half. Emoji and accented characters survive transit.</dd>
-            <dt>Compatibility</dt><dd>Stock Meshtastic clients (T-Deck, official app) see the raw markers as text gibberish — they can't reassemble. This is openkb-mesh-internet-only on both ends.</dd>
+            <dt>Compatibility</dt><dd>Stock Meshtastic clients (T-Deck, official app) see the raw markers as text gibberish — they can't reassemble or decode typed payloads. This is openkb-mesh-internet-only on both ends.</dd>
           </dl>
         </div>
 
@@ -1383,6 +2195,61 @@ function HelpView({ canned, updateCanned }: { canned: string[]; updateCanned: (n
               <tr><td style={{ fontFamily: 'var(--mono)' }}>⌘ / Ctrl + 1–9</td><td>Send the matching quick message immediately</td></tr>
             </tbody>
           </table>
+        </div>
+
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Slash commands</h3>
+          <p style={{ margin: '0 0 8px', color: 'var(--text-dim)', fontSize: 12.5 }}>
+            Type a command starting with <code>/</code> in the compose box.
+          </p>
+          <table className="data" style={{ fontSize: 12.5 }}>
+            <tbody>
+              <tr><td style={{ fontFamily: 'var(--mono)' }}>/me {'<action>'}</td><td>"* {'<your shortName>'} {'<action>'}" — IRC-style action message.</td></tr>
+              <tr><td style={{ fontFamily: 'var(--mono)' }}>/position or /pos</td><td>Share your current GPS position as a typed payload.</td></tr>
+              <tr><td style={{ fontFamily: 'var(--mono)' }}>/help</td><td>Jump to this Help tab.</td></tr>
+              <tr><td style={{ fontFamily: 'var(--mono)' }}>/shortcodes</td><td>Show the emoji shortcode list (this tab).</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Emoji shortcodes</h3>
+          <p style={{ margin: '0 0 8px', color: 'var(--text-dim)', fontSize: 12.5 }}>
+            Type a shortcode like <code>:tu:</code> and it auto-expands to the emoji on send. Useful when typing on a hardware keyboard (T-Deck) that doesn't have emoji input.
+          </p>
+          <div className="shortcode-grid">
+            {listShortcodes().map(({ code, emoji }) => (
+              <div key={code} className="shortcode-item">
+                <span className="shortcode-emoji">{emoji}</span>
+                <code className="shortcode-code">{code}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Phrase macros</h3>
+          <p style={{ margin: '0 0 8px', color: 'var(--text-dim)', fontSize: 12.5 }}>
+            Short forms that expand to longer phrases when sent. Save typing on a small keyboard.
+          </p>
+          <table className="data" style={{ fontSize: 12.5 }}>
+            <tbody>
+              <tr><td style={{ fontFamily: 'var(--mono)' }}>:eta {'<n>'}:</td><td>→ "ETA {'<n>'} min"</td></tr>
+              <tr><td style={{ fontFamily: 'var(--mono)' }}>:in {'<n>'}:</td><td>→ "In {'<n>'} min"</td></tr>
+              <tr><td style={{ fontFamily: 'var(--mono)' }}>:at {'<place>'}:</td><td>→ "At {'<place>'}"</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Inline smart rendering</h3>
+          <p style={{ margin: 0, color: 'var(--text-dim)', fontSize: 12.5 }}>
+            Plain-text messages automatically detect and enhance:
+          </p>
+          <ul style={{ margin: '8px 0 0', paddingLeft: 18, color: 'var(--text-dim)', fontSize: 12.5, lineHeight: 1.55 }}>
+            <li><strong>Coordinates</strong>: any "lat, lon" pair (e.g. <code>37.123, -121.456</code>) renders as a clickable chip that opens OpenStreetMap.</li>
+            <li><strong>URLs</strong>: http(s) links open in your browser. Stays plain text on the wire — no expansion cost.</li>
+          </ul>
         </div>
       </div>
 

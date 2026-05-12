@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, session, systemPreferences } from 'electron';
 import path from 'path';
 import { MeshManager } from './meshtastic/manager';
 import { MeshDatabase } from './database';
@@ -40,6 +40,14 @@ function createWindow() {
       app.focus({ steal: true });
     }
   });
+
+  // Forward renderer console messages to the main process stdout so we can
+  // tail /tmp/electron.log and see [voice], [main], and serial-write lines
+  // in one stream. Level 0=verbose, 1=info, 2=warning, 3=error.
+  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    const tag = level === 3 ? '[renderer error]' : level === 2 ? '[renderer warn]' : '[renderer]';
+    console.log(`${tag} ${message}`);
+  });
 }
 
 app.on('activate', () => {
@@ -56,6 +64,37 @@ app.whenReady().then(async () => {
   db = new MeshDatabase();
   console.log('[mesh-internet] db ready at', db.getDbPath());
   manager = new MeshManager(db);
+
+  // ── Media permissions for voice messages ──────────────────────────
+  // By default, Electron denies getUserMedia() — the call may even
+  // succeed with an empty/silent stream depending on platform. We
+  // grant 'media' permission to our own renderer here. On macOS we
+  // additionally trigger the system mic-access prompt up-front so the
+  // first record click doesn't fail silently.
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    if (permission === 'media' || permission === 'mediaKeySystem') {
+      callback(true);
+    } else {
+      callback(false);
+    }
+  });
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => {
+    return permission === 'media' || permission === 'mediaKeySystem';
+  });
+
+  if (process.platform === 'darwin') {
+    const status = systemPreferences.getMediaAccessStatus('microphone');
+    console.log(`[mesh-internet] mic access status: ${status}`);
+    if (status === 'not-determined') {
+      try {
+        const granted = await systemPreferences.askForMediaAccess('microphone');
+        console.log(`[mesh-internet] mic access asked, granted=${granted}`);
+      } catch (e) {
+        console.warn('[mesh-internet] askForMediaAccess failed:', e);
+      }
+    }
+  }
+
   createWindow();
 
   const broadcast = (channel: string, payload: unknown) => {

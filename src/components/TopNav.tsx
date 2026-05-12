@@ -32,7 +32,7 @@ export type TabId =
 export interface Tab {
   id: TabId;
   label: string;
-  group: 'app' | 'live' | 'learn' | 'kb';
+  group: 'app' | 'live' | 'troubleshoot' | 'learn' | 'kb';
 }
 
 export const TABS: Tab[] = [
@@ -45,12 +45,12 @@ export const TABS: Tab[] = [
   { id: 'map',          label: 'Map',            group: 'live' },
   { id: 'chat',         label: 'Chat',           group: 'live' },
   { id: 'telemetry',    label: 'Telemetry',      group: 'live' },
-  { id: 'traceroute',   label: 'Traceroute',     group: 'live' },
-  { id: 'delivery',     label: 'Delivery',       group: 'live' },
-  { id: 'sniffer',      label: 'Packet Sniffer', group: 'live' },
-  { id: 'radio-compare', label: 'Compare Radios', group: 'live' },
-  { id: 'link-test',    label: 'Link Test',      group: 'live' },
-  { id: 'health',       label: 'Mesh Health',    group: 'live' },
+  { id: 'health',       label: 'Mesh Health',    group: 'troubleshoot' },
+  { id: 'radio-compare', label: 'Compare Radios', group: 'troubleshoot' },
+  { id: 'link-test',    label: 'Link Test',      group: 'troubleshoot' },
+  { id: 'delivery',     label: 'Delivery',       group: 'troubleshoot' },
+  { id: 'traceroute',   label: 'Traceroute',     group: 'troubleshoot' },
+  { id: 'sniffer',      label: 'Packet Sniffer', group: 'troubleshoot' },
   { id: 'link-budget',   label: 'Link Budget',     group: 'learn' },
   { id: 'rssi-distance', label: 'RSSI vs Distance', group: 'learn' },
   { id: 'coverage',      label: 'Coverage',         group: 'learn' },

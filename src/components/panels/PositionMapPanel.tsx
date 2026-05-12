@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useActiveConnId } from '../../hooks/MeshContext';
+import { PanelChannelHeader } from '../PanelChannelHeader';
 
 type BasemapStyle = 'dark' | 'voyager' | 'light';
 const BASEMAP_URLS: Record<BasemapStyle, string> = {
@@ -129,6 +130,43 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
   const [activeTab, setActiveTab] = useState<'map' | 'data'>('map');
   const [showLinks, setShowLinks] = useState(true);
   const [showDistances, setShowDistances] = useState(false);
+  const [showCoverage, setShowCoverage] = useState(false);
+  const [coverageSamples, setCoverageSamples] = useState<PathLossSample[]>([]);
+
+  // Fetch path-loss samples whenever the coverage overlay is enabled. We use
+  // a 30-day window — enough history to fit a stable model without including
+  // old positions that may no longer reflect terrain (after moves).
+  useEffect(() => {
+    if (!showCoverage) return;
+    let cancelled = false;
+    window.mesh.pathLossSamples({ sinceMs: Date.now() - 30 * 24 * 60 * 60 * 1000 })
+      .then((s) => { if (!cancelled) setCoverageSamples(s); });
+    return () => { cancelled = true; };
+  }, [showCoverage]);
+
+  // Fit a log-distance path-loss model: RSSI = intercept + slope * log10(d_km).
+  // The exponent n is -slope / 10 (so slope = -10n in dB per decade of distance).
+  // We weight every direct (hop 0) sample equally and ignore distance-zero
+  // (self) and absurdly far samples that would skew the fit.
+  const coverageFit = useMemo(() => {
+    if (!me?.lat || !me?.lon) return null;
+    const prepared = coverageSamples
+      .filter((s) => s.hopsAway === 0)
+      .map((s) => ({ rssi: s.rssi, distKm: haversineKm(me.lat!, me.lon!, s.lat, s.lon) }))
+      .filter((s) => s.distKm > 0.001 && s.distKm < 200);
+    if (prepared.length < 3) return null;
+    let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (const s of prepared) {
+      const x = Math.log10(s.distKm);
+      sx += x; sy += s.rssi; sxx += x * x; sxy += x * s.rssi;
+    }
+    const n = prepared.length;
+    const denom = sxx - sx * sx / n;
+    if (Math.abs(denom) < 1e-9) return null;
+    const slope = (sxy - sx * sy / n) / denom;
+    const intercept = sy / n - slope * sx / n;
+    return { intercept, slope, exponent: -slope / 10, sampleCount: n };
+  }, [coverageSamples, me?.lat, me?.lon]);
 
   const onMouseDown: React.MouseEventHandler<HTMLDivElement> = (e) => {
     if (!view) return;
@@ -252,6 +290,8 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
         Nodes that share GPS over the mesh appear here. Basemap tiles are © OpenStreetMap contributors / © CARTO. Distances use the haversine formula; halos show position precision.
       </p>
 
+      <PanelChannelHeader state={state} label="VIEWING FROM" />
+
       <div className="subnav">
         <button className={'subnav-btn' + (activeTab === 'map' ? ' active' : '')} onClick={() => setActiveTab('map')}>
           Map
@@ -318,6 +358,10 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                 <svg width="100%" height="100%" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid meet">
                   <MapTiles view={view!} style={basemap} />
                   <Grid view={view!} basemap={basemap} />
+
+                  {showCoverage && view && me?.lat !== undefined && me?.lon !== undefined && coverageFit && (
+                    <CoverageHeatmap view={view!} myLat={me.lat!} myLon={me.lon!} fit={coverageFit} />
+                  )}
 
                   {/* Precision halos render under everything else */}
                   {placed.map((p) => {
@@ -461,8 +505,34 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                     >
                       km
                     </button>
+                    <button
+                      className={showCoverage ? 'active' : ''}
+                      onClick={() => setShowCoverage((v) => !v)}
+                      title="Coverage heatmap: paints predicted RSSI from your radio across the map, based on a path-loss model fit to your observed links."
+                    >
+                      ⌷ coverage
+                    </button>
                   </div>
                 </div>
+
+                {/* Coverage legend — only visible when the heatmap overlay is on. */}
+                {showCoverage && (
+                  <div className="map-overlay map-overlay-bl coverage-legend">
+                    <div className="coverage-legend-title">PREDICTED RSSI</div>
+                    {coverageFit ? (
+                      <>
+                        <div className="coverage-legend-row"><span className="coverage-legend-swatch" style={{ background: '#66d39a' }} /> &gt; −85 dBm — strong</div>
+                        <div className="coverage-legend-row"><span className="coverage-legend-swatch" style={{ background: '#ffd166' }} /> −85 to −105 — moderate</div>
+                        <div className="coverage-legend-row"><span className="coverage-legend-swatch" style={{ background: '#ff6b81' }} /> −105 to −120 — marginal</div>
+                        <div className="coverage-legend-footer">
+                          n = <strong>{coverageFit.exponent.toFixed(2)}</strong>, fit from {coverageFit.sampleCount} samples
+                        </div>
+                      </>
+                    ) : (
+                      <div className="coverage-legend-empty">Not enough RSSI samples to fit a model yet ({coverageSamples.length} found, need 3+ direct).</div>
+                    )}
+                  </div>
+                )}
 
                 {/* Cursor lat/lon readout */}
                 {cursorLatLon && (
@@ -737,6 +807,69 @@ function projectMeters(lat: number, lon: number, view: View): { x: number; y: nu
     x: ((mx - view.minMx) / (view.maxMx - view.minMx)) * SVG_W,
     y: ((my - view.minMy) / (view.maxMy - view.minMy)) * SVG_H,
   };
+}
+
+/**
+ * Coverage heatmap overlay. Samples a grid of cells in screen space, projects
+ * each back to lat/lon, computes distance from the user's radio, predicts RSSI
+ * from a fitted path-loss model, and renders coloured rects with low opacity
+ * so the basemap underneath is still legible.
+ *
+ * The grid is intentionally coarse (40×25 ≈ 1000 cells) — high enough to see
+ * the shape of the coverage, low enough to repaint instantly on pan/zoom.
+ */
+function CoverageHeatmap({
+  view, myLat, myLon, fit,
+}: {
+  view: View;
+  myLat: number;
+  myLon: number;
+  fit: { intercept: number; slope: number; exponent: number; sampleCount: number };
+}) {
+  const COLS = 40;
+  const ROWS = 25;
+  const SVG_W = 1600;
+  const SVG_H = 1000;
+  const cellW = SVG_W / COLS;
+  const cellH = SVG_H / ROWS;
+
+  const cells: React.ReactNode[] = [];
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const cxPx = (c + 0.5) * cellW;
+      const cyPx = (r + 0.5) * cellH;
+      const mx = view.minMx + (cxPx / SVG_W) * (view.maxMx - view.minMx);
+      const my = view.minMy + (cyPx / SVG_H) * (view.maxMy - view.minMy);
+      const lat = mercYToLat(my, view.zoom);
+      const lon = mercXToLon(mx, view.zoom);
+      const d = haversineKm(myLat, myLon, lat, lon);
+      // Skip the cell containing the user — it'd predict +∞ dBm.
+      if (d < 0.02) continue;
+      const predicted = fit.intercept + fit.slope * Math.log10(d);
+      const color = colorForRssi(predicted);
+      if (!color) continue; // below sensitivity → transparent
+      cells.push(
+        <rect
+          key={`${r}-${c}`}
+          x={c * cellW}
+          y={r * cellH}
+          width={cellW + 0.5} // overlap by half a pixel to hide grid seams
+          height={cellH + 0.5}
+          fill={color}
+          opacity={0.35}
+          pointerEvents="none"
+        />,
+      );
+    }
+  }
+  return <g className="coverage-heatmap" pointerEvents="none">{cells}</g>;
+}
+
+function colorForRssi(rssi: number): string | null {
+  if (rssi > -85) return '#66d39a';   // strong
+  if (rssi > -105) return '#ffd166';  // moderate
+  if (rssi > -120) return '#ff6b81';  // marginal
+  return null;                         // below practical sensitivity
 }
 
 function MapTiles({ view, style }: { view: View; style: BasemapStyle }) {

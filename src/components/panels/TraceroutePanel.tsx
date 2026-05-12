@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { TracerouteRecord } from '../../hooks/useMesh';
 import { useActiveConnId } from '../../hooks/MeshContext';
+import { PanelChannelHeader } from '../PanelChannelHeader';
 
 interface Props {
   nodes: NodeRecord[];
@@ -77,6 +78,8 @@ export function TraceroutePanel({ nodes, state, traceroutes, onMessageNode }: Pr
       <p className="page-sub">
         Ask the mesh: which nodes did the packet pass through to reach a destination — and how did the response come back? Each intermediate relay stamps its node ID into the route as the request flows.
       </p>
+
+      <PanelChannelHeader state={state} label="TRACING FROM" />
 
       <div className="subnav">
         <button className={'subnav-btn' + (tab === 'run' ? ' active' : '')} onClick={() => setTab('run')}>Run</button>

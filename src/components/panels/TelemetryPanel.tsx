@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { UtilPoint } from '../../hooks/useMesh';
+import { PanelChannelHeader } from '../PanelChannelHeader';
 
 interface Props {
   nodes: NodeRecord[];
@@ -83,6 +84,8 @@ export function TelemetryPanel({ nodes, utilHistory, state, onMessageNode }: Pro
       <p className="page-sub">
         Mesh health: how saturated the airwaves are, how much battery each node has, how much airtime each node is using. Telemetry packets arrive on port 67, typically every 15–30 minutes per node.
       </p>
+
+      <PanelChannelHeader state={state} label="TELEMETRY FROM" />
 
       <div className="subnav">
         <button className={'subnav-btn' + (tab === 'chan' ? ' active' : '')} onClick={() => setTab('chan')}>Channel util</button>

@@ -8,6 +8,8 @@ interface Props {
   positionedCount: number;
   lastPacketAt: number | null;
   packetsLast60s: number;
+  /** Opens the onboarding tour again. Surfaced as a "Show me around" button. */
+  onShowTour?: () => void;
 }
 
 interface PathCard {
@@ -49,7 +51,7 @@ function ago(ms: number): string {
   return `${Math.floor(d / 3_600_000)}h ago`;
 }
 
-export function HomePage({ go, state, nodesCount, positionedCount, lastPacketAt, packetsLast60s }: Props) {
+export function HomePage({ go, state, nodesCount, positionedCount, lastPacketAt, packetsLast60s, onShowTour }: Props) {
   const [stats, setStats] = useState<DbStats | null>(null);
 
   useEffect(() => {
@@ -62,11 +64,25 @@ export function HomePage({ go, state, nodesCount, positionedCount, lastPacketAt,
 
   return (
     <div className="page">
-      <h1 className="page-title">A field guide to your Meshtastic node.</h1>
-      <p className="page-sub">
-        This app talks directly to your radio over USB. Watch packets fly. Understand why your range is what it is.
-        Then learn how to push it further.
-      </p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
+        <div>
+          <h1 className="page-title">A field guide to your Meshtastic node.</h1>
+          <p className="page-sub">
+            This app talks directly to your radio over USB. Watch packets fly. Understand why your range is what it is.
+            Then learn how to push it further.
+          </p>
+        </div>
+        {onShowTour && (
+          <button
+            className="ghost"
+            onClick={onShowTour}
+            style={{ flexShrink: 0, padding: '6px 14px', fontSize: 12 }}
+            title="Walk through the app's main panels"
+          >
+            Show me around
+          </button>
+        )}
+      </div>
 
       <Hero state={state} nodesCount={nodesCount} positionedCount={positionedCount} lastPacketAt={lastPacketAt} packetsLast60s={packetsLast60s} go={go} />
 

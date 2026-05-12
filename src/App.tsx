@@ -30,6 +30,7 @@ import { ComparePanel } from './components/ComparePanel';
 import { EventFeedPanel } from './components/EventFeedPanel';
 import { useMesh } from './hooks/useMesh';
 import { MeshContext } from './hooks/MeshContext';
+import { Onboarding, hasCompletedOnboarding } from './components/Onboarding';
 
 export type ChatTarget =
   | { kind: 'channel'; index: number }
@@ -41,6 +42,9 @@ export function App() {
   const [tab, setTab] = useState<TabId>('chat');
   const [chatTarget, setChatTarget] = useState<ChatTarget | null>(null);
   const mesh = useMesh();
+  // Auto-show the onboarding tour for first-time users. Manual trigger lives
+  // on the Home page so users can revisit any time.
+  const [showOnboarding, setShowOnboarding] = useState(() => !hasCompletedOnboarding());
 
   // Per-panel "last viewed" timestamps drive unread badges.
   const [lastViewed, setLastViewed] = useState<Partial<Record<TabId, number>>>({});
@@ -103,6 +107,13 @@ export function App() {
         setActiveConnId: mesh.setActiveConnId,
       }}
     >
+    {showOnboarding && (
+      <Onboarding
+        go={(t) => { setTab(t); /* keep overlay open so user can continue clicking through */ }}
+        state={mesh.state}
+        onClose={() => setShowOnboarding(false)}
+      />
+    )}
     <div className="app">
       <Sidebar
         active={tab}
@@ -129,6 +140,7 @@ export function App() {
           positionedCount={positioned}
           lastPacketAt={mesh.lastPacketAt}
           packetsLast60s={mesh.packetsLast60s}
+          onShowTour={() => setShowOnboarding(true)}
         />
       )}
       {tab === 'settings' && <SettingsPanel state={mesh.state} />}

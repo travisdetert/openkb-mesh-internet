@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useActiveConnId } from '../../hooks/MeshContext';
-import { channelHash, channelHashHex, pskFingerprint, pskLabel } from '../../channel-identity';
+import { PanelChannelHeader } from '../PanelChannelHeader';
 
 const STALE_S = 24 * 3600;
 const AGING_S = 3600;
@@ -89,9 +89,6 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
   const selected = selectedNum !== null ? nodes.find((n) => n.num === selectedNum) : null;
   const me = nodes.find((n) => n.num === state.myInfo?.myNodeNum);
 
-  const primary = state.channels?.find((c) => c.index === 0);
-  const primaryHash = primary ? channelHash(primary.name || '', primary.psk ?? []) : null;
-
   return (
     <div className="page">
       <h1 className="page-title">Nodes</h1>
@@ -99,26 +96,7 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
         Every node your radio has heard since it powered on. Click a row for detail. Direct = picked up off the air; Relayed = forwarded through another node.
       </p>
 
-      {state.status === 'ready' && primary && (
-        <div className="nodes-channel-id">
-          <span className="nodes-channel-id-label">LISTENING ON</span>
-          <span className="nodes-channel-id-name">{primary.name || '(default)'}</span>
-          <span className="nodes-channel-id-meta">{pskLabel(primary.pskLength)}</span>
-          {primaryHash !== null && (
-            <span className="nodes-channel-id-meta" title="8-bit channel hash = xor(name) ^ xor(psk). Two radios on the same logical channel compute the same hash; receivers use it to pick a decryption key.">
-              hash <strong style={{ color: 'var(--accent)', fontFamily: 'var(--mono)' }}>{channelHashHex(primaryHash)}</strong>
-            </span>
-          )}
-          <span className="nodes-channel-id-meta">
-            psk <span style={{ fontFamily: 'var(--mono)' }}>{pskFingerprint(primary.psk ?? [])}</span>
-          </span>
-          {state.loraConfig && (
-            <span className="nodes-channel-id-meta">
-              {state.loraConfig.regionName} · {state.loraConfig.usePreset ? state.loraConfig.modemPresetName : `SF${state.loraConfig.spreadFactor}/${(state.loraConfig.bandwidth / 1000).toFixed(0)}k`}
-            </span>
-          )}
-        </div>
-      )}
+      <PanelChannelHeader state={state} label="LISTENING ON" />
 
       <div className="layout-split-wide">
         <div>
