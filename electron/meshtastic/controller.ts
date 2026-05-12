@@ -14,6 +14,11 @@ import {
   encodeToRadio_SetNetworkConfig,
   encodeToRadio_SetDisplayConfig,
   encodeToRadio_SetBluetoothConfig,
+  encodeToRadio_SetMqttConfig,
+  encodeToRadio_SetChannel,
+  encodeChannelSetUrl,
+  decodeChannelSetUrl,
+  ChannelEdit,
   LoRaConfigEdit,
   MyInfo,
   NodeInfo,
@@ -26,6 +31,7 @@ import {
   NetworkConfigMsg,
   DisplayConfigMsg,
   BluetoothConfigMsg,
+  MQTTConfigMsg,
 } from './protobuf-codec';
 import { lookupHwModel } from './device-database';
 import { MeshDatabase } from '../database';
@@ -41,6 +47,7 @@ export interface ConnectionState {
   networkConfig?: NetworkConfigMsg;
   displayConfig?: DisplayConfigMsg;
   bluetoothConfig?: BluetoothConfigMsg;
+  mqttConfig?: MQTTConfigMsg;
   channels?: ChannelMsg[];
   error?: string;
 }
@@ -297,30 +304,105 @@ export class MeshtasticController extends EventEmitter {
     return local;
   }
 
+  /**
+   * Local-admin messages MUST be addressed to the radio's own node number,
+   * not to=0 (broadcast/unset). The firmware drops admin packets that don't
+   * pass the local-admin exemption check, and `to=0` doesn't pass.
+   */
+  private myNumForAdmin(): number | null {
+    const my = this.state.myInfo?.myNodeNum;
+    if (!my) {
+      console.warn('[controller] admin send dropped — myNodeNum not yet known. Wait for the radio to finish syncing.');
+      return null;
+    }
+    return my;
+  }
+
   setOwner(longName: string, shortName: string): void {
-    this.enqueueToRadio(encodeToRadio_SetOwner({ longName, shortName }));
+    const to = this.myNumForAdmin(); if (!to) return;
+    this.enqueueToRadio(encodeToRadio_SetOwner(to, { longName, shortName }));
   }
 
   setLoraConfig(lora: LoRaConfigEdit): void {
-    this.enqueueToRadio(encodeToRadio_SetLoraConfig(lora));
+    const to = this.myNumForAdmin(); if (!to) return;
+    this.enqueueToRadio(encodeToRadio_SetLoraConfig(to, lora));
   }
   setDeviceConfig(c: DeviceConfigMsg): void {
-    this.enqueueToRadio(encodeToRadio_SetDeviceConfig(c));
+    const to = this.myNumForAdmin(); if (!to) return;
+    this.enqueueToRadio(encodeToRadio_SetDeviceConfig(to, c));
   }
   setPositionConfig(c: PositionConfigMsg): void {
-    this.enqueueToRadio(encodeToRadio_SetPositionConfig(c));
+    const to = this.myNumForAdmin(); if (!to) return;
+    this.enqueueToRadio(encodeToRadio_SetPositionConfig(to, c));
   }
   setPowerConfig(c: PowerConfigMsg): void {
-    this.enqueueToRadio(encodeToRadio_SetPowerConfig(c));
+    const to = this.myNumForAdmin(); if (!to) return;
+    this.enqueueToRadio(encodeToRadio_SetPowerConfig(to, c));
   }
   setNetworkConfig(c: NetworkConfigMsg): void {
-    this.enqueueToRadio(encodeToRadio_SetNetworkConfig(c));
+    const to = this.myNumForAdmin(); if (!to) return;
+    this.enqueueToRadio(encodeToRadio_SetNetworkConfig(to, c));
   }
   setDisplayConfig(c: DisplayConfigMsg): void {
-    this.enqueueToRadio(encodeToRadio_SetDisplayConfig(c));
+    const to = this.myNumForAdmin(); if (!to) return;
+    this.enqueueToRadio(encodeToRadio_SetDisplayConfig(to, c));
   }
   setBluetoothConfig(c: BluetoothConfigMsg): void {
-    this.enqueueToRadio(encodeToRadio_SetBluetoothConfig(c));
+    const to = this.myNumForAdmin(); if (!to) return;
+    this.enqueueToRadio(encodeToRadio_SetBluetoothConfig(to, c));
+  }
+  setMqttConfig(c: MQTTConfigMsg): void {
+    const to = this.myNumForAdmin(); if (!to) return;
+    this.enqueueToRadio(encodeToRadio_SetMqttConfig(to, c));
+  }
+  setChannel(c: ChannelEdit): void {
+    const to = this.myNumForAdmin(); if (!to) return;
+    this.enqueueToRadio(encodeToRadio_SetChannel(to, c));
+  }
+  /**
+   * Build the standard meshtastic.org/e/# URL for the current channel set +
+   * LoRa config. Returns null if either is missing.
+   */
+  getChannelSetUrl(): string | null {
+    if (!this.state.loraConfig || !this.state.channels) return null;
+    const settings = this.state.channels
+      .filter((c) => c.role !== 0)
+      .map((c) => ({ name: c.name, psk: c.psk, uplinkEnabled: c.uplinkEnabled, downlinkEnabled: c.downlinkEnabled }));
+    return encodeChannelSetUrl(settings, this.state.loraConfig);
+  }
+  /** Apply a parsed channel-set URL: writes each channel + LoRa config to the radio. */
+  applyChannelSetUrl(url: string): boolean {
+    const parsed = decodeChannelSetUrl(url);
+    if (!parsed) return false;
+    const to = this.myNumForAdmin(); if (!to) return false;
+    parsed.channels.forEach((c, i) => {
+      this.enqueueToRadio(encodeToRadio_SetChannel(to, {
+        index: i,
+        role: i === 0 ? 1 : 2,
+        name: c.name,
+        psk: c.psk,
+        uplinkEnabled: c.uplinkEnabled,
+        downlinkEnabled: c.downlinkEnabled,
+      }));
+    });
+    if (parsed.lora) {
+      this.enqueueToRadio(encodeToRadio_SetLoraConfig(to, {
+        usePreset: parsed.lora.usePreset,
+        modemPreset: parsed.lora.modemPreset,
+        bandwidth: parsed.lora.bandwidth,
+        spreadFactor: parsed.lora.spreadFactor,
+        codingRate: parsed.lora.codingRate,
+        region: parsed.lora.region,
+        hopLimit: parsed.lora.hopLimit,
+        txEnabled: parsed.lora.txEnabled,
+        txPower: parsed.lora.txPower,
+        channelNum: parsed.lora.channelNum,
+        overrideDutyCycle: false,
+        sx126xRxBoostedGain: parsed.lora.sx126xRxBoostedGain,
+        overrideFrequency: parsed.lora.overrideFrequency,
+      }));
+    }
+    return true;
   }
 
   // ── Outbound queue ────────────────────────────────────────────────────────
@@ -426,6 +508,7 @@ export class MeshtasticController extends EventEmitter {
         if (msg.networkConfig) patch.networkConfig = msg.networkConfig;
         if (msg.displayConfig) patch.displayConfig = msg.displayConfig;
         if (msg.bluetoothConfig) patch.bluetoothConfig = msg.bluetoothConfig;
+        if (msg.mqttConfig) patch.mqttConfig = msg.mqttConfig;
         if (Object.keys(patch).length > 0) this.setState({ ...this.state, ...patch });
         break;
       }

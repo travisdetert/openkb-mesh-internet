@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useActiveConnId } from '../../hooks/MeshContext';
 
 type BasemapStyle = 'dark' | 'voyager' | 'light';
 const BASEMAP_URLS: Record<BasemapStyle, string> = {
@@ -53,6 +54,7 @@ function ago(secs?: number): string {
 export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [hideStale, setHideStale] = useState(false);
+  const [hideMqtt, setHideMqtt] = useState(false);
   const [basemap, setBasemap] = useState<BasemapStyle>('voyager');
   const [zoomOverride, setZoomOverride] = useState<number | null>(null);
   const [centerOverride, setCenterOverride] = useState<{ lat: number; lon: number } | null>(null);
@@ -66,8 +68,13 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
     [nodes],
   );
   const positioned = useMemo(
-    () => hideStale ? positionedAll.filter((n) => !isStale(n.lastHeard)) : positionedAll,
-    [positionedAll, hideStale],
+    () => {
+      let out = positionedAll;
+      if (hideStale) out = out.filter((n) => !isStale(n.lastHeard));
+      if (hideMqtt) out = out.filter((n) => !n.viaMqtt);
+      return out;
+    },
+    [positionedAll, hideStale, hideMqtt],
   );
 
   const myId = state.myInfo?.myNodeNum;
@@ -279,6 +286,15 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                     hide stale ({staleCount})
                   </label>
                 )}
+                {(() => {
+                  const mqttPositioned = positionedAll.filter((n) => n.viaMqtt).length;
+                  return mqttPositioned > 0 && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={hideMqtt} onChange={(e) => setHideMqtt(e.target.checked)} />
+                      local mesh only — hide {mqttPositioned} MQTT
+                    </label>
+                  );
+                })()}
                 {view && <span style={{ fontFamily: 'var(--mono)' }}>z{view.zoom} · {Math.round(view.spanKm * 100) / 100} km</span>}
               </div>
             </div>
@@ -374,7 +390,8 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                   ))}
 
                   {placed.map((p) => {
-                    const fill = p.isMe ? '#5cc8ff' : (p.node.hopsAway ?? 0) === 0 ? '#66d39a' : '#ffd166';
+                    const isMqtt = !!p.node.viaMqtt;
+                    const fill = p.isMe ? '#5cc8ff' : isMqtt ? '#b88aff' : (p.node.hopsAway ?? 0) === 0 ? '#66d39a' : '#ffd166';
                     return (
                       <g
                         key={p.node.num}
@@ -386,9 +403,10 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                         style={{ cursor: 'pointer', opacity: p.isStale ? 0.45 : 1 }}
                       >
                         <circle cx={p.x} cy={p.y} r={p.isMe ? 12 : 9}
-                                fill={fill}
-                                stroke={selectedId === p.node.num ? '#fff' : 'rgba(0,0,0,0.6)'}
-                                strokeWidth={selectedId === p.node.num ? 3 : 1.5} />
+                                fill={isMqtt ? 'none' : fill}
+                                stroke={selectedId === p.node.num ? '#fff' : isMqtt ? '#b88aff' : 'rgba(0,0,0,0.6)'}
+                                strokeWidth={selectedId === p.node.num ? 3 : isMqtt ? 2 : 1.5}
+                                strokeDasharray={isMqtt ? '3 2' : undefined} />
                         <text x={p.x} y={p.y - (p.isMe ? 18 : 14)}
                               textAnchor="middle"
                               fontSize={p.isMe ? 14 : 12}
@@ -545,6 +563,7 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                 <li><span style={{ color: '#5cc8ff' }}>● blue</span> = your radio</li>
                 <li><span style={{ color: '#66d39a' }}>● green</span> = direct (hop 0)</li>
                 <li><span style={{ color: '#ffd166' }}>● yellow</span> = relayed</li>
+                <li><span style={{ color: '#b88aff' }}>○ dashed purple</span> = MQTT-only (not on the local airwaves)</li>
                 <li>solid line = direct RF from your radio · dashed = relayed</li>
                 <li><span style={{ color: '#5cc8ff' }}>blue line</span> = observed mesh link (between any two nodes) — thicker = more packets, more opaque = stronger RSSI</li>
                 <li>dashed halo = position precision (privacy blur or coarse GPS)</li>
@@ -576,6 +595,7 @@ function SelectedDetail({
   onMessage?: (n: number) => void;
   onClose: () => void;
 }) {
+  const connId = useActiveConnId();
   const isMe = state.myInfo?.myNodeNum === node.num;
   const distKm = me?.lat && node.lat ? haversineKm(me.lat, me.lon!, node.lat, node.lon!) : null;
   return (
@@ -611,8 +631,8 @@ function SelectedDetail({
           </button>
           <button
             className="ghost"
-            onClick={() => window.mesh.sendTraceroute({ to: node.num })}
-            disabled={state.status !== 'ready'}
+            onClick={() => connId && window.mesh.sendTraceroute({ connId, to: node.num })}
+            disabled={state.status !== 'ready' || !connId}
             style={{ padding: '4px 10px', fontSize: 12 }}
           >
             Traceroute

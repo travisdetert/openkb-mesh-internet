@@ -120,6 +120,7 @@ function StreamTab({ packets, nodes, state, paused, setPaused, onMessageNode }: 
   const [filterPort, setFilterPort] = useState<number | 'all'>('all');
   const [filterSender, setFilterSender] = useState<number | 'all'>('all');
   const [filterEncrypted, setFilterEncrypted] = useState<'all' | 'yes' | 'no'>('all');
+  const [filterSource, setFilterSource] = useState<'all' | 'rf' | 'mqtt'>('all');
   const [search, setSearch] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -143,6 +144,8 @@ function StreamTab({ packets, nodes, state, paused, setPaused, onMessageNode }: 
       if (filterSender !== 'all' && p.from !== filterSender) return false;
       if (filterEncrypted === 'yes' && !p.encrypted) return false;
       if (filterEncrypted === 'no' && p.encrypted) return false;
+      if (filterSource === 'mqtt' && !p.viaMqtt) return false;
+      if (filterSource === 'rf' && p.viaMqtt) return false;
       if (search) {
         const q = search.toLowerCase();
         const haystack = [
@@ -153,7 +156,7 @@ function StreamTab({ packets, nodes, state, paused, setPaused, onMessageNode }: 
       }
       return true;
     });
-  }, [packets, filterPort, filterSender, filterEncrypted, search, nodes]);
+  }, [packets, filterPort, filterSender, filterEncrypted, filterSource, search, nodes]);
 
   const exportCsv = () => {
     const rows = filtered.map((p) => ({
@@ -193,6 +196,11 @@ function StreamTab({ packets, nodes, state, paused, setPaused, onMessageNode }: 
             <option value="yes">Encrypted only</option>
             <option value="no">Decoded only</option>
           </select>
+          <select className="text" value={filterSource} onChange={(e) => setFilterSource(e.target.value as any)} style={{ width: 140 }}>
+            <option value="all">Any source</option>
+            <option value="rf">RF only</option>
+            <option value="mqtt">MQTT only</option>
+          </select>
           <input className="text" placeholder="search text/name/portnum…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: 1, minWidth: 180 }} />
           <button
             className={paused ? 'primary' : 'ghost'}
@@ -221,6 +229,7 @@ function StreamTab({ packets, nodes, state, paused, setPaused, onMessageNode }: 
             <thead>
               <tr>
                 <th>Time</th>
+                <th>Src</th>
                 <th>From</th>
                 <th>To</th>
                 <th>Port</th>
@@ -242,6 +251,11 @@ function StreamTab({ packets, nodes, state, paused, setPaused, onMessageNode }: 
                       style={{ cursor: 'pointer', background: expanded ? 'var(--bg-elev-2)' : undefined }}
                     >
                       <td style={{ fontFamily: 'var(--mono)', fontSize: 11 }}>{fmtAbsTime(p.receivedAt)}</td>
+                      <td>
+                        {p.viaMqtt
+                          ? <span className="src-chip src-mqtt">MQTT</span>
+                          : <span className="src-chip src-rf">RF</span>}
+                      </td>
                       <td>
                         <span style={{ color: isFromMe ? 'var(--good)' : colorForNode(p.from) }}>{nameFor(nodes, p.from)}</span>
                         {isFromMe && <span style={{ marginLeft: 4, fontSize: 10, color: 'var(--text-faint)' }}>(me)</span>}
@@ -270,7 +284,7 @@ function StreamTab({ packets, nodes, state, paused, setPaused, onMessageNode }: 
                     </tr>
                     {expanded && (
                       <tr>
-                        <td colSpan={8} style={{ background: 'var(--bg-elev-2)', padding: 14 }}>
+                        <td colSpan={9} style={{ background: 'var(--bg-elev-2)', padding: 14 }}>
                           <DetailView p={p} nodes={nodes} onMessageNode={onMessageNode} />
                         </td>
                       </tr>

@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatTarget } from '../../App';
+import { useActiveConnId, useMeshContext } from '../../hooks/MeshContext';
+import { channelHash, channelHashHex, pskFingerprint, pskLabel } from '../../channel-identity';
 
 const BROADCAST = 0xffffffff;
 
@@ -270,6 +272,7 @@ interface Props {
 }
 
 export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) {
+  const connId = useActiveConnId();
   const myNum = state.myInfo?.myNodeNum ?? 0;
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -299,13 +302,13 @@ export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) 
   }, [filtered.length, effective?.kind === 'dm' ? effective.nodeNum : effective?.kind === 'channel' ? effective.index : -1]);
 
   const send = async () => {
-    if (!text.trim() || state.status !== 'ready' || !effective) return;
+    if (!text.trim() || state.status !== 'ready' || !effective || !connId) return;
     setSending(true);
     try {
       if (effective.kind === 'channel') {
-        await window.mesh.sendText({ text: text.trim(), channel: effective.index });
+        await window.mesh.sendText({ connId, text: text.trim(), channel: effective.index });
       } else {
-        await window.mesh.sendText({ text: text.trim(), to: effective.nodeNum, wantAck: true });
+        await window.mesh.sendText({ connId, text: text.trim(), to: effective.nodeNum, wantAck: true });
       }
       setText('');
     } finally {
@@ -314,9 +317,9 @@ export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) 
   };
 
   const resend = async (m: TextMessage) => {
-    if (state.status !== 'ready') return;
-    if (m.to === BROADCAST) await window.mesh.sendText({ text: m.text, channel: m.channel });
-    else await window.mesh.sendText({ text: m.text, to: m.to, wantAck: true });
+    if (state.status !== 'ready' || !connId) return;
+    if (m.to === BROADCAST) await window.mesh.sendText({ connId, text: m.text, channel: m.channel });
+    else await window.mesh.sendText({ connId, text: m.text, to: m.to, wantAck: true });
   };
 
   const exportMessages = (subset: TextMessage[], suffix: string) => {
@@ -345,12 +348,23 @@ export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) 
     URL.revokeObjectURL(url);
   };
 
+  const myNode = myNum ? nodes.find((n) => n.num === myNum) : undefined;
+  const radioLabel = myNode?.shortName || myNode?.longName || state.portPath?.split('/').pop() || 'this radio';
+
   return (
     <div className="page">
       <h1 className="page-title">Chat</h1>
       <p className="page-sub">
         Channels broadcast to anyone with the matching key. DMs are addressed to a single node and request an ack.
       </p>
+      {state.status === 'ready' && (
+        <div className="chat-sending-via">
+          <span className="chat-sending-via-label">SENDING VIA</span>
+          <span className="chat-sending-via-name">{radioLabel}</span>
+          {myNum > 0 && <span className="chat-sending-via-num">!{(myNum >>> 0).toString(16).padStart(8, '0')}</span>}
+          {state.portPath && <span className="chat-sending-via-port">{state.portPath}</span>}
+        </div>
+      )}
 
       <div className="subnav">
         <button className={'subnav-btn' + (activeTab === 'conversations' ? ' active' : '')} onClick={() => setActiveTab('conversations')}>
@@ -449,6 +463,7 @@ function _Conversations({
   convos, effective, setTarget, filtered, messages, nodes, state, myNum,
   text, setText, send, sending, resend, scrollRef, composeRef,
 }: ConversationsProps & { composeRef: React.RefObject<HTMLTextAreaElement> }) {
+  const connId = useActiveConnId();
   const headerLabel = effective
     ? effective.kind === 'channel'
       ? `# ${convos.find((c) => c.key === `ch:${effective.index}`)?.label ?? effective.index}`
@@ -509,7 +524,15 @@ function _Conversations({
                 <>
                   <span>{channelMeta.roleName}</span>
                   <span>·</span>
-                  <span>{channelMeta.pskLength === 0 ? 'unencrypted' : channelMeta.pskLength === 1 ? 'default key' : 'AES'}</span>
+                  <span>{pskLabel(channelMeta.pskLength)}</span>
+                  <span>·</span>
+                  <span title="8-bit channel hash = xor(name) ^ xor(psk). Receivers use this to pick a decryption key; mismatched hash = packets ignored.">
+                    hash <strong style={{ color: 'var(--accent)', fontFamily: 'var(--mono)' }}>{channelHashHex(channelHash(channelMeta.name || '', channelMeta.psk ?? []))}</strong>
+                  </span>
+                  <span>·</span>
+                  <span title="First/last bytes of the actual PSK — proves two identically-labelled keys really are the same.">
+                    psk <span style={{ fontFamily: 'var(--mono)', color: 'var(--text-faint)' }}>{pskFingerprint(channelMeta.psk ?? [])}</span>
+                  </span>
                   <span>·</span>
                   <span>{filtered.length} msg{filtered.length === 1 ? '' : 's'}</span>
                 </>
@@ -519,7 +542,15 @@ function _Conversations({
                   <span>{shortHex(peerNode.num)}</span>
                   {peerNode.hopsAway !== undefined && <><span>·</span><span>hop {peerNode.hopsAway}</span></>}
                   {peerNode.rssi !== undefined && peerNode.rssi !== 0 && <><span>·</span><span>{peerNode.rssi} dBm</span></>}
-                  {peerNode.lastHeard && <><span>·</span><span>last heard {agoShort(peerNode.lastHeard)}</span></>}
+                  {peerNode.lastHeard && (
+                    <>
+                      <span>·</span>
+                      <span style={{ color: (Date.now() / 1000 - peerNode.lastHeard) < 60 * 30 ? 'var(--good)' : (Date.now() / 1000 - peerNode.lastHeard) < 60 * 60 * 2 ? 'var(--warn)' : 'var(--text-faint)' }}>
+                        last RX {agoShort(peerNode.lastHeard)}
+                      </span>
+                    </>
+                  )}
+                  {peerNode.viaMqtt && <><span>·</span><span className="src-chip src-mqtt">via MQTT</span></>}
                 </>
               )}
             </div>
@@ -528,8 +559,8 @@ function _Conversations({
             <button
               className="ghost"
               style={{ padding: '4px 10px', fontSize: 12 }}
-              onClick={() => window.mesh.sendTraceroute({ to: (effective as any).nodeNum })}
-              disabled={state.status !== 'ready'}
+              onClick={() => connId && window.mesh.sendTraceroute({ connId, to: (effective as any).nodeNum })}
+              disabled={state.status !== 'ready' || !connId}
               title="Send a traceroute to this node"
             >
               Traceroute
@@ -544,6 +575,8 @@ function _Conversations({
             <MessageList messages={filtered} nodes={nodes} myNum={myNum} onResend={resend} />
           )}
         </div>
+
+        <DeliveryProbe filtered={filtered} myNum={myNum} effective={effective} />
 
         <div className="compose">
           <textarea
@@ -762,6 +795,7 @@ function ActivityView({
 // ────────────────────────────────────────────────────────────────────
 
 function SettingsView({ state }: { state: ConnectionState }) {
+  const connId = useActiveConnId();
   const [longName, setLongName] = useState('');
   const [shortName, setShortName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -769,10 +803,10 @@ function SettingsView({ state }: { state: ConnectionState }) {
   const isReady = state.status === 'ready';
 
   const apply = async () => {
-    if (!longName.trim() || !shortName.trim()) return;
+    if (!longName.trim() || !shortName.trim() || !connId) return;
     setBusy(true); setMsg('');
     try {
-      await window.mesh.setOwner({ longName: longName.trim(), shortName: shortName.trim().slice(0, 4) });
+      await window.mesh.setOwner({ connId, longName: longName.trim(), shortName: shortName.trim().slice(0, 4) });
       setMsg('Sent to radio. Other nodes will pick up the new name on the next NodeInfo broadcast.');
     } catch (e: any) {
       setMsg('Error: ' + (e?.message ?? String(e)));
@@ -891,4 +925,128 @@ function agoShort(secs: number): string {
 function escCsv(v: string): string {
   if (/[",\n\r]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
   return v;
+}
+
+/**
+ * Live verification that "the radio actually transmitted my message and another
+ * connected radio physically received it on RF". Watches every OTHER connected
+ * radio's recentPackets for a packet matching the most recent outgoing message
+ * in this conversation. Hard proof — no inference, no acks, just "did the bytes
+ * cross the air?".
+ *
+ * If the user has only one radio connected, we can't independently verify and
+ * the probe collapses to a hint.
+ */
+function DeliveryProbe({
+  filtered, myNum, effective,
+}: {
+  filtered: TextMessage[];
+  myNum: number;
+  effective: ChatTarget | null;
+}) {
+  const { connections, activeConnId } = useMeshContext();
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const lastMine = useMemo(() => {
+    // Most recent message we sent on this conversation
+    for (let i = filtered.length - 1; i >= 0; i--) {
+      if (filtered[i].from === myNum) return filtered[i];
+    }
+    return null;
+  }, [filtered, myNum]);
+
+  if (!lastMine || !effective) return null;
+
+  const others = connections.filter((c) => c.connId !== activeConnId && c.state.status === 'ready');
+  const sinceSec = Math.max(0, (Date.now() - (lastMine.sentAt ?? lastMine.rxTime * 1000)) / 1000);
+
+  // For each "other" radio, two independent checks:
+  // (1) Did its raw RX stream show our packet? (proves the radio decoded it off the air)
+  // (2) Did the firmware also store it in the messages buffer? (proves the firmware
+  //     considered it a real chat message — not e.g. dropped due to PKI key issues)
+  const findings = others.map((c) => {
+    const my = c.state.myInfo?.myNodeNum;
+    const cName = (my ? c.nodes.find((n) => n.num === my) : undefined)?.shortName || c.portPath?.split('/').pop() || c.connId;
+    const match = c.recentPackets.find((p) =>
+      p.id === lastMine.id && p.from === lastMine.from && !p.viaMqtt,
+    );
+    const inMessages = c.messages.find((m) =>
+      m.id === lastMine.id && m.from === lastMine.from,
+    );
+    return { connId: c.connId, name: cName, match, inMessages };
+  });
+
+  return (
+    <div className="chat-probe">
+      <div className="chat-probe-label">DELIVERY PROBE</div>
+      <div className="chat-probe-body">
+        <div className="chat-probe-row">
+          <span className="chat-probe-step ok">✓</span>
+          <span>Sent to radio (over USB) — packet id <code>!{(lastMine.id >>> 0).toString(16).padStart(8, '0').slice(-4)}</code></span>
+        </div>
+        <div className="chat-probe-row">
+          <span className={'chat-probe-step ' + (lastMine.ackStatus === 'acked' ? 'ok' : lastMine.ackStatus === 'failed' ? 'bad' : 'pending')}>
+            {lastMine.ackStatus === 'acked' ? '✓' : lastMine.ackStatus === 'failed' ? '✗' : '⏳'}
+          </span>
+          <span>
+            {lastMine.to === 0xffffffff || lastMine.to === undefined
+              ? 'Broadcast — no per-recipient ack (broadcasts are fire-and-forget; verify via cross-radio below)'
+              : lastMine.ackStatus === 'acked'
+                ? `Routing ack received from the mesh${lastMine.rxSnr ? ` (SNR ${lastMine.rxSnr.toFixed(1)})` : ''} — someone heard it and acknowledged. Note: a relay may have acked, doesn't guarantee the destination decoded the payload.`
+                : lastMine.ackStatus === 'failed'
+                  ? `Failed — ${lastMine.ackError === 3 ? 'no ack within 60s (TIMEOUT)' : `Routing.Error code ${lastMine.ackError}`}.`
+                  : `Waiting for routing ack… (${sinceSec.toFixed(0)}s elapsed)`}
+          </span>
+        </div>
+        {others.length === 0 ? (
+          <div className="chat-probe-row">
+            <span className="chat-probe-step pending">·</span>
+            <span style={{ color: 'var(--text-faint)' }}>
+              No second radio is connected. Plug in another USB radio (Connect → + Add another radio) to verify packets actually cross the airwaves.
+            </span>
+          </div>
+        ) : (
+          findings.flatMap((f) => [
+            <div key={f.connId + '-rf'} className="chat-probe-row">
+              <span className={'chat-probe-step ' + (f.match ? 'ok' : sinceSec > 30 ? 'bad' : 'pending')}>
+                {f.match ? '✓' : sinceSec > 30 ? '✗' : '⏳'}
+              </span>
+              <span>
+                {f.match ? (
+                  <>
+                    <strong>{f.name}</strong>'s radio decoded it off the air after {((f.match.receivedAt - (lastMine.sentAt ?? lastMine.rxTime * 1000)) / 1000).toFixed(1)}s
+                    {f.match.rxRssi !== 0 && <> · RSSI <strong>{f.match.rxRssi}</strong> dBm</>}
+                    {f.match.rxSnr !== 0 && <> · SNR <strong>{f.match.rxSnr.toFixed(1)}</strong></>}
+                    {f.match.hopStart > 0 && <> · hop <strong>{f.match.hopStart - f.match.hopLimit}/{f.match.hopStart}</strong></>}
+                  </>
+                ) : sinceSec > 30 ? (
+                  <><strong>{f.name}</strong> did NOT receive this packet on RF in 30s. The radios are not talking even though configs match — check antenna, range, or one of them in deep sleep.</>
+                ) : (
+                  <>Waiting for <strong>{f.name}</strong> to receive on RF… ({sinceSec.toFixed(0)}s)</>
+                )}
+              </span>
+            </div>,
+            <div key={f.connId + '-msgs'} className="chat-probe-row">
+              <span className={'chat-probe-step ' + (f.inMessages ? 'ok' : f.match && sinceSec > 5 ? 'bad' : 'pending')}>
+                {f.inMessages ? '✓' : f.match && sinceSec > 5 ? '✗' : '⏳'}
+              </span>
+              <span>
+                {f.inMessages ? (
+                  <><strong>{f.name}</strong>'s firmware stored it in its messages buffer — proof the radio considers this a valid chat message it would display. If the T-Deck screen still isn't showing it, that's a firmware UI bug, not a delivery problem.</>
+                ) : f.match && sinceSec > 5 ? (
+                  <><strong>{f.name}</strong> received the RF packet but did NOT add it to its messages buffer. Likely a PKI key issue (DM-only) or a corrupted text-decode. Try a broadcast on slot 0 instead of a DM.</>
+                ) : (
+                  <>Waiting for <strong>{f.name}</strong>'s firmware to register the message…</>
+                )}
+              </span>
+            </div>,
+          ])
+        )}
+      </div>
+    </div>
+  );
 }

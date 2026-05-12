@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useActiveConnId, useMeshContext } from '../../hooks/MeshContext';
 
 const REGIONS: Array<{ value: number; label: string; band: string }> = [
   { value: 0, label: 'UNSET',     band: '— pick one —' },
@@ -84,6 +85,11 @@ type ConfigSection = 'lora' | 'device' | 'position' | 'power' | 'bluetooth' | 'd
 export function SettingsPanel({ state }: { state: ConnectionState }) {
   const [section, setSection] = useState<ConfigSection>('lora');
   const isReady = state.status === 'ready';
+  const { connections, activeConnId, setActiveConnId } = useMeshContext();
+  const active = connections.find((c) => c.connId === activeConnId);
+  const myNum = state.myInfo?.myNodeNum;
+  const myNode = myNum ? state.channels && active?.nodes.find((n) => n.num === myNum) : undefined;
+  const radioLabel = myNode?.shortName || myNode?.longName || state.portPath?.split('/').pop() || activeConnId || 'radio';
 
   return (
     <div className="page">
@@ -91,6 +97,31 @@ export function SettingsPanel({ state }: { state: ConnectionState }) {
       <p className="page-sub">
         Change your radio's configuration directly. Most changes trigger a device reboot (~5–10 s) — this app will auto-reconnect and resync.
       </p>
+
+      {/* Active radio header — critical with multi-radio: every Apply goes to this one */}
+      {connections.length > 0 && (
+        <div className="settings-target">
+          <span className="settings-target-label">EDITING</span>
+          {connections.length > 1 ? (
+            <select
+              className="text settings-target-select"
+              value={activeConnId ?? ''}
+              onChange={(e) => setActiveConnId(e.target.value || null)}
+            >
+              {connections.map((c) => {
+                const cMy = c.state.myInfo?.myNodeNum;
+                const cName = cMy ? c.nodes.find((n) => n.num === cMy) : undefined;
+                const label = cName?.shortName || cName?.longName || c.portPath?.split('/').pop() || c.connId;
+                return <option key={c.connId} value={c.connId}>{label} ({c.state.status})</option>;
+              })}
+            </select>
+          ) : (
+            <span className="settings-target-name">{radioLabel}</span>
+          )}
+          {state.portPath && <span className="settings-target-port">{state.portPath}</span>}
+          {state.myInfo?.firmwareVersion && <span className="settings-target-fw">fw {state.myInfo.firmwareVersion}</span>}
+        </div>
+      )}
 
       {!isReady && (
         <div className="info-card" style={{ borderLeftColor: 'var(--warn)', marginBottom: 14 }}>
@@ -148,12 +179,63 @@ interface EditorHarnessProps<T> {
 
 function EditorHarness<T extends object>({ live, isReady, apply, title, description, rightColumn, renderForm, diffRows }: EditorHarnessProps<T>) {
   const [draft, setDraft] = useState<T | null>(null);
-  // Reseed whenever live values arrive or change (e.g. after a reboot).
+  // Track what `live` *actually was* by content, not by reference — the parent
+  // rebuilds `live` on every render, so a naive [live] dep would reset the
+  // draft on every keystroke. Only re-seed when a value genuinely changed
+  // (e.g. the radio echoed back a fresh config after a reboot).
+  const livePrevRef = useRef<T | undefined>(undefined);
   useEffect(() => {
-    if (live) setDraft({ ...(live as any) });
+    if (!live) return;
+    const prev = livePrevRef.current;
+    const changed = !prev || Object.keys(live).some((k) => (live as any)[k] !== (prev as any)[k]);
+    if (changed) {
+      setDraft({ ...(live as any) });
+      livePrevRef.current = { ...(live as any) };
+    }
   }, [live]);
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [msg, setMsg] = useState<{ tone: 'good' | 'warn' | 'bad'; text: string } | null>(null);
+  // What we last sent to the radio + when. Cleared once `live` echoes a match,
+  // or when the verification times out.
+  const [pendingApply, setPendingApply] = useState<{ at: number; expected: T } | null>(null);
+  const [, setTick] = useState(0);
+
+  // 1-Hz tick so the "(Xs ago)" portion of the pending message updates.
+  useEffect(() => {
+    if (!pendingApply) return;
+    const t = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, [pendingApply]);
+
+  // Verify a pending apply: when the radio echoes a fresh config, compare it
+  // to what we sent. Match → confirmed; mismatch is silent until timeout.
+  useEffect(() => {
+    if (!pendingApply || !live) return;
+    const matches = Object.keys(pendingApply.expected).every((k) => {
+      const exp = (pendingApply.expected as any)[k];
+      const got = (live as any)[k];
+      if (typeof exp === 'number' && typeof got === 'number') return Math.abs(exp - got) < 0.001;
+      return exp === got;
+    });
+    if (matches) {
+      const dt = ((Date.now() - pendingApply.at) / 1000).toFixed(1);
+      setMsg({ tone: 'good', text: `✓ Radio confirmed — config echoed back after ${dt}s.` });
+      setPendingApply(null);
+    }
+  }, [live, pendingApply]);
+
+  // Verification timeout — admin messages can be silently dropped; surface that.
+  useEffect(() => {
+    if (!pendingApply) return;
+    const handle = setTimeout(() => {
+      setMsg({
+        tone: 'bad',
+        text: 'No matching config echo in 45 s — the change may not have applied. Likely causes: firmware requires session passkey, value outside region\'s allowed range, or the admin message was dropped. Check the Compare Radios panel to see the radio\'s actual current values.',
+      });
+      setPendingApply(null);
+    }, 45_000);
+    return () => clearTimeout(handle);
+  }, [pendingApply]);
 
   const dirty = useMemo(() => {
     if (!live || !draft) return false;
@@ -178,17 +260,19 @@ function EditorHarness<T extends object>({ live, isReady, apply, title, descript
   const onApply = async () => {
     if (!draft) return;
     setBusy(true); setMsg(null);
+    const snapshot = { at: Date.now(), expected: { ...(draft as any) } as T };
     try {
       await apply(draft);
-      setMsg({ ok: true, text: 'Config sent. Radio will reboot — auto-reconnecting…' });
+      setPendingApply(snapshot);
+      setMsg({ tone: 'warn', text: '⏳ Sent to radio. Waiting for echo confirming the new values (up to 45s — radio reboots first on most changes)…' });
     } catch (e: any) {
-      setMsg({ ok: false, text: 'Error: ' + (e?.message ?? String(e)) });
+      setMsg({ tone: 'bad', text: 'Error sending to radio: ' + (e?.message ?? String(e)) });
     } finally {
       setBusy(false);
     }
   };
 
-  const revert = () => { setDraft({ ...(live as any) }); setMsg(null); };
+  const revert = () => { setDraft({ ...(live as any) }); setMsg(null); setPendingApply(null); };
 
   return (
     <div className="layout-split-wide">
@@ -202,7 +286,14 @@ function EditorHarness<T extends object>({ live, isReady, apply, title, descript
               {busy ? 'Sending…' : dirty ? 'Apply (radio will reboot)' : 'No changes'}
             </button>
             {dirty && <button className="ghost" onClick={revert} disabled={busy}>Revert</button>}
-            {msg && <span style={{ fontSize: 12, color: msg.ok ? 'var(--good)' : 'var(--bad)' }}>{msg.text}</span>}
+            {msg && (
+              <span style={{
+                fontSize: 12,
+                color: msg.tone === 'good' ? 'var(--good)' : msg.tone === 'warn' ? 'var(--warn)' : 'var(--bad)',
+                flex: '1 1 auto',
+                minWidth: 200,
+              }}>{msg.text}</span>
+            )}
           </div>
         </div>
       </div>
@@ -258,6 +349,8 @@ function lookup<T extends { value: number; label: string }>(table: T[], v: numbe
 // ─────────────────────────────────────────────────────────────────────
 
 function LoRaEditor({ state, isReady }: { state: ConnectionState; isReady: boolean }) {
+  const connId = useActiveConnId();
+  const reject = () => Promise.reject(new Error('No active radio connection'));
   return (
     <EditorHarness<LoRaConfigEdit>
       live={state.loraConfig ? {
@@ -272,7 +365,7 @@ function LoRaEditor({ state, isReady }: { state: ConnectionState; isReady: boole
         ignoreMqtt: false,
       } : undefined}
       isReady={isReady}
-      apply={(c) => window.mesh.setLoraConfig(c)}
+      apply={(c) => connId ? window.mesh.setLoraConfig({ connId, config: c }) : reject()}
       title="LoRa radio"
       description={<>The two settings that <strong>must</strong> match between any two communicating radios are <strong>region</strong> (frequency band) and <strong>modem preset</strong> (SF/BW/CR combination). If your other device has different values, you will hear nothing.</>}
       rightColumn={<>
@@ -347,11 +440,13 @@ function LoRaEditor({ state, isReady }: { state: ConnectionState; isReady: boole
 // ─────────────────────────────────────────────────────────────────────
 
 function DeviceEditor({ state, isReady }: { state: ConnectionState; isReady: boolean }) {
+  const connId = useActiveConnId();
+  const reject = () => Promise.reject(new Error('No active radio connection'));
   return (
     <EditorHarness<DeviceConfig>
       live={state.deviceConfig}
       isReady={isReady}
-      apply={(c) => window.mesh.setDeviceConfig(c)}
+      apply={(c) => connId ? window.mesh.setDeviceConfig({ connId, config: c }) : reject()}
       title="Device"
       description={<>The radio's <strong>role</strong> determines how aggressively it participates in the mesh — routers prioritize forwarding, trackers prioritize battery, clients are the default.</>}
       rightColumn={
@@ -395,11 +490,13 @@ function DeviceEditor({ state, isReady }: { state: ConnectionState; isReady: boo
 // ─────────────────────────────────────────────────────────────────────
 
 function PositionEditor({ state, isReady }: { state: ConnectionState; isReady: boolean }) {
+  const connId = useActiveConnId();
+  const reject = () => Promise.reject(new Error('No active radio connection'));
   return (
     <EditorHarness<PositionConfig>
       live={state.positionConfig}
       isReady={isReady}
-      apply={(c) => window.mesh.setPositionConfig(c)}
+      apply={(c) => connId ? window.mesh.setPositionConfig({ connId, config: c }) : reject()}
       title="Position"
       description={<>How often your radio broadcasts its location, and how it gets that location. Smart broadcast suppresses updates when you haven't moved.</>}
       rightColumn={
@@ -437,11 +534,13 @@ function PositionEditor({ state, isReady }: { state: ConnectionState; isReady: b
 // ─────────────────────────────────────────────────────────────────────
 
 function PowerEditor({ state, isReady }: { state: ConnectionState; isReady: boolean }) {
+  const connId = useActiveConnId();
+  const reject = () => Promise.reject(new Error('No active radio connection'));
   return (
     <EditorHarness<PowerConfig>
       live={state.powerConfig}
       isReady={isReady}
-      apply={(c) => window.mesh.setPowerConfig(c)}
+      apply={(c) => connId ? window.mesh.setPowerConfig({ connId, config: c }) : reject()}
       title="Power"
       description={<>Sleep timings determine how much battery you save versus how responsive the device feels. Super-deep-sleep (SDS) cuts almost everything; light-sleep (LS) keeps the radio on but pauses the CPU between events.</>}
       rightColumn={
@@ -474,11 +573,13 @@ function PowerEditor({ state, isReady }: { state: ConnectionState; isReady: bool
 // ─────────────────────────────────────────────────────────────────────
 
 function BluetoothEditor({ state, isReady }: { state: ConnectionState; isReady: boolean }) {
+  const connId = useActiveConnId();
+  const reject = () => Promise.reject(new Error('No active radio connection'));
   return (
     <EditorHarness<BluetoothConfig>
       live={state.bluetoothConfig}
       isReady={isReady}
-      apply={(c) => window.mesh.setBluetoothConfig(c)}
+      apply={(c) => connId ? window.mesh.setBluetoothConfig({ connId, config: c }) : reject()}
       title="Bluetooth"
       description={<>Pairing mode and PIN. Most users should leave this on RANDOM_PIN (shown on the device screen when pairing).</>}
       rightColumn={
@@ -510,11 +611,13 @@ function BluetoothEditor({ state, isReady }: { state: ConnectionState; isReady: 
 // ─────────────────────────────────────────────────────────────────────
 
 function DisplayEditor({ state, isReady }: { state: ConnectionState; isReady: boolean }) {
+  const connId = useActiveConnId();
+  const reject = () => Promise.reject(new Error('No active radio connection'));
   return (
     <EditorHarness<DisplayConfig>
       live={state.displayConfig}
       isReady={isReady}
-      apply={(c) => window.mesh.setDisplayConfig(c)}
+      apply={(c) => connId ? window.mesh.setDisplayConfig({ connId, config: c }) : reject()}
       title="Display"
       description={<>OLED screen behavior: how long it stays on, what gets shown, orientation, units.</>}
       rightColumn={
@@ -553,11 +656,13 @@ function DisplayEditor({ state, isReady }: { state: ConnectionState; isReady: bo
 // ─────────────────────────────────────────────────────────────────────
 
 function NetworkEditor({ state, isReady }: { state: ConnectionState; isReady: boolean }) {
+  const connId = useActiveConnId();
+  const reject = () => Promise.reject(new Error('No active radio connection'));
   return (
     <EditorHarness<NetworkConfig>
       live={state.networkConfig}
       isReady={isReady}
-      apply={(c) => window.mesh.setNetworkConfig(c)}
+      apply={(c) => connId ? window.mesh.setNetworkConfig({ connId, config: c }) : reject()}
       title="Network"
       description={<>WiFi and Ethernet (where supported by the board). Most users don't need this — but turning on WiFi lets the radio join MQTT and act as an internet ↔ mesh gateway.</>}
       rightColumn={<>

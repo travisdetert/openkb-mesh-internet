@@ -1,76 +1,98 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 const api = {
+  // ── connections ─────────────────────────────────────────────────────
   listPorts: () => ipcRenderer.invoke('mesh:listPorts'),
+  listConnections: () => ipcRenderer.invoke('mesh:listConnections'),
   connect: (portPath: string) => ipcRenderer.invoke('mesh:connect', portPath),
-  disconnect: () => ipcRenderer.invoke('mesh:disconnect'),
-  getState: () => ipcRenderer.invoke('mesh:getState'),
-  getNodes: () => ipcRenderer.invoke('mesh:getNodes'),
-  getMessages: () => ipcRenderer.invoke('mesh:getMessages'),
-  sendText: (args: { text: string; to?: number; channel?: number; wantAck?: boolean }) =>
-    ipcRenderer.invoke('mesh:sendText', args),
-  sendTraceroute: (args: { to: number; channel?: number }) =>
-    ipcRenderer.invoke('mesh:sendTraceroute', args),
-  setOwner: (args: { longName: string; shortName: string }) =>
-    ipcRenderer.invoke('mesh:setOwner', args),
-  setLoraConfig:      (a: unknown) => ipcRenderer.invoke('mesh:setLoraConfig', a),
-  setDeviceConfig:    (a: unknown) => ipcRenderer.invoke('mesh:setDeviceConfig', a),
-  setPositionConfig:  (a: unknown) => ipcRenderer.invoke('mesh:setPositionConfig', a),
-  setPowerConfig:     (a: unknown) => ipcRenderer.invoke('mesh:setPowerConfig', a),
-  setNetworkConfig:   (a: unknown) => ipcRenderer.invoke('mesh:setNetworkConfig', a),
-  setDisplayConfig:   (a: unknown) => ipcRenderer.invoke('mesh:setDisplayConfig', a),
-  setBluetoothConfig: (a: unknown) => ipcRenderer.invoke('mesh:setBluetoothConfig', a),
+  disconnect: (connId: string) => ipcRenderer.invoke('mesh:disconnect', connId),
 
+  // ── per-connection queries ──────────────────────────────────────────
+  getState: (connId: string) => ipcRenderer.invoke('mesh:getState', connId),
+  getNodes: (connId: string) => ipcRenderer.invoke('mesh:getNodes', connId),
+  getMessages: (connId: string) => ipcRenderer.invoke('mesh:getMessages', connId),
+  getTraces: (connId: string) => ipcRenderer.invoke('mesh:getTraces', connId),
+
+  // ── per-connection commands ─────────────────────────────────────────
+  sendText: (args: { connId: string; text: string; to?: number; channel?: number; wantAck?: boolean }) =>
+    ipcRenderer.invoke('mesh:sendText', args),
+  sendTraceroute: (args: { connId: string; to: number; channel?: number }) =>
+    ipcRenderer.invoke('mesh:sendTraceroute', args),
+  setOwner: (args: { connId: string; longName: string; shortName: string }) =>
+    ipcRenderer.invoke('mesh:setOwner', args),
+  setLoraConfig:      (args: { connId: string; config: unknown }) => ipcRenderer.invoke('mesh:setLoraConfig', args),
+  setDeviceConfig:    (args: { connId: string; config: unknown }) => ipcRenderer.invoke('mesh:setDeviceConfig', args),
+  setPositionConfig:  (args: { connId: string; config: unknown }) => ipcRenderer.invoke('mesh:setPositionConfig', args),
+  setPowerConfig:     (args: { connId: string; config: unknown }) => ipcRenderer.invoke('mesh:setPowerConfig', args),
+  setNetworkConfig:   (args: { connId: string; config: unknown }) => ipcRenderer.invoke('mesh:setNetworkConfig', args),
+  setDisplayConfig:   (args: { connId: string; config: unknown }) => ipcRenderer.invoke('mesh:setDisplayConfig', args),
+  setBluetoothConfig: (args: { connId: string; config: unknown }) => ipcRenderer.invoke('mesh:setBluetoothConfig', args),
+  setMqttConfig:      (args: { connId: string; config: unknown }) => ipcRenderer.invoke('mesh:setMqttConfig', args),
+  setChannel:         (args: { connId: string; channel: unknown }) => ipcRenderer.invoke('mesh:setChannel', args),
+  getChannelSetUrl:   (connId: string) => ipcRenderer.invoke('mesh:getChannelSetUrl', connId),
+  applyChannelSetUrl: (args: { connId: string; url: string }) => ipcRenderer.invoke('mesh:applyChannelSetUrl', args),
+
+  // ── shared / DB ─────────────────────────────────────────────────────
   dbStats: () => ipcRenderer.invoke('mesh:dbStats'),
-  pathLossSamples: (args?: { sinceMs?: number }) => ipcRenderer.invoke('mesh:pathLossSamples', args ?? {}),
+  pathLossSamples: (args?: { connId?: string; sinceMs?: number }) => ipcRenderer.invoke('mesh:pathLossSamples', args ?? {}),
   telemetryHistory: (args?: { sinceMs?: number }) => ipcRenderer.invoke('mesh:telemetryHistory', args ?? {}),
   links: () => ipcRenderer.invoke('mesh:links'),
-  getTraces: () => ipcRenderer.invoke('mesh:getTraces'),
 
-  onState: (cb: (s: unknown) => void) => {
-    const fn = (_e: unknown, s: unknown) => cb(s);
+  // ── event streams (all payloads now carry connId) ───────────────────
+  onState: (cb: (p: { connId: string; state: unknown }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; state: unknown }) => cb(p);
     ipcRenderer.on('mesh:state', fn);
     return () => ipcRenderer.removeListener('mesh:state', fn);
   },
-  onNode: (cb: (n: unknown) => void) => {
-    const fn = (_e: unknown, n: unknown) => cb(n);
+  onNode: (cb: (p: { connId: string; node: unknown }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; node: unknown }) => cb(p);
     ipcRenderer.on('mesh:node', fn);
     return () => ipcRenderer.removeListener('mesh:node', fn);
   },
-  onMessage: (cb: (m: unknown) => void) => {
-    const fn = (_e: unknown, m: unknown) => cb(m);
+  onMessage: (cb: (p: { connId: string; message: unknown }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; message: unknown }) => cb(p);
     ipcRenderer.on('mesh:message', fn);
     return () => ipcRenderer.removeListener('mesh:message', fn);
   },
-  onMessageStatus: (cb: (m: unknown) => void) => {
-    const fn = (_e: unknown, m: unknown) => cb(m);
+  onMessageStatus: (cb: (p: { connId: string; message: unknown }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; message: unknown }) => cb(p);
     ipcRenderer.on('mesh:messageStatus', fn);
     return () => ipcRenderer.removeListener('mesh:messageStatus', fn);
   },
-  onPacket: (cb: (p: unknown) => void) => {
-    const fn = (_e: unknown, p: unknown) => cb(p);
+  onPacket: (cb: (p: { connId: string; packet: unknown }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; packet: unknown }) => cb(p);
     ipcRenderer.on('mesh:packet', fn);
     return () => ipcRenderer.removeListener('mesh:packet', fn);
   },
-  onTelemetrySample: (cb: (s: unknown) => void) => {
-    const fn = (_e: unknown, s: unknown) => cb(s);
+  onTelemetrySample: (cb: (p: { connId: string; sample: unknown }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; sample: unknown }) => cb(p);
     ipcRenderer.on('mesh:telemetrySample', fn);
     return () => ipcRenderer.removeListener('mesh:telemetrySample', fn);
   },
-  onTracerouteSent: (cb: (t: unknown) => void) => {
-    const fn = (_e: unknown, t: unknown) => cb(t);
+  onTracerouteSent: (cb: (p: { connId: string; trace: unknown }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; trace: unknown }) => cb(p);
     ipcRenderer.on('mesh:tracerouteSent', fn);
     return () => ipcRenderer.removeListener('mesh:tracerouteSent', fn);
   },
-  onTracerouteResponse: (cb: (t: unknown) => void) => {
-    const fn = (_e: unknown, t: unknown) => cb(t);
+  onTracerouteResponse: (cb: (p: { connId: string; response: unknown }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; response: unknown }) => cb(p);
     ipcRenderer.on('mesh:tracerouteResponse', fn);
     return () => ipcRenderer.removeListener('mesh:tracerouteResponse', fn);
   },
-  onTraceUpdate: (cb: (t: unknown) => void) => {
-    const fn = (_e: unknown, t: unknown) => cb(t);
+  onTraceUpdate: (cb: (p: { connId: string; trace: unknown }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; trace: unknown }) => cb(p);
     ipcRenderer.on('mesh:traceUpdate', fn);
     return () => ipcRenderer.removeListener('mesh:traceUpdate', fn);
+  },
+  onConnectionAdded: (cb: (p: { connId: string; portPath: string }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; portPath: string }) => cb(p);
+    ipcRenderer.on('mesh:connectionAdded', fn);
+    return () => ipcRenderer.removeListener('mesh:connectionAdded', fn);
+  },
+  onConnectionRemoved: (cb: (p: { connId: string }) => void) => {
+    const fn = (_e: unknown, p: { connId: string }) => cb(p);
+    ipcRenderer.on('mesh:connectionRemoved', fn);
+    return () => ipcRenderer.removeListener('mesh:connectionRemoved', fn);
   },
 };
 

@@ -45,6 +45,17 @@ declare global {
     roleName: string;
     name: string;
     pskLength: number;
+    /** Raw PSK bytes (0–32). Empty = open channel; 1 byte = default key. */
+    psk: number[];
+    uplinkEnabled: boolean;
+    downlinkEnabled: boolean;
+  }
+
+  interface ChannelEdit {
+    index: number;
+    role: number;
+    name: string;
+    psk: number[];
     uplinkEnabled: boolean;
     downlinkEnabled: boolean;
   }
@@ -104,6 +115,20 @@ declare global {
     mode: number;
     fixedPin: number;
   }
+  interface MQTTConfig {
+    enabled: boolean;
+    address: string;
+    username: string;
+    password: string;
+    encryptionEnabled: boolean;
+    jsonEnabled: boolean;
+    tlsEnabled: boolean;
+    root: string;
+    proxyToClientEnabled: boolean;
+    mapReportingEnabled: boolean;
+    mapReportPublishIntervalSecs?: number;
+    mapReportPositionPrecision?: number;
+  }
 
   interface ConnectionState {
     status: 'disconnected' | 'connecting' | 'configuring' | 'ready';
@@ -116,6 +141,7 @@ declare global {
     networkConfig?: NetworkConfig;
     displayConfig?: DisplayConfig;
     bluetoothConfig?: BluetoothConfig;
+    mqttConfig?: MQTTConfig;
     channels?: MeshChannel[];
     error?: string;
   }
@@ -295,37 +321,55 @@ declare global {
     ignoreMqtt?: boolean;
   }
 
+  interface ConnectionSummary {
+    connId: string;
+    state: ConnectionState;
+    portPath?: string;
+  }
+
   interface MeshAPI {
     listPorts: () => Promise<PortInfo[]>;
-    connect: (portPath: string) => Promise<void>;
-    disconnect: () => Promise<void>;
-    getState: () => Promise<ConnectionState>;
-    getNodes: () => Promise<NodeRecord[]>;
-    getMessages: () => Promise<TextMessage[]>;
-    sendText: (args: { text: string; to?: number; channel?: number; wantAck?: boolean }) => Promise<TextMessage>;
-    sendTraceroute: (args: { to: number; channel?: number }) => Promise<{ packetId: number; sentAt: number }>;
-    setOwner: (args: { longName: string; shortName: string }) => Promise<void>;
-    setLoraConfig:      (args: LoRaConfigEdit) => Promise<void>;
-    setDeviceConfig:    (args: DeviceConfig) => Promise<void>;
-    setPositionConfig:  (args: PositionConfig) => Promise<void>;
-    setPowerConfig:     (args: PowerConfig) => Promise<void>;
-    setNetworkConfig:   (args: NetworkConfig) => Promise<void>;
-    setDisplayConfig:   (args: DisplayConfig) => Promise<void>;
-    setBluetoothConfig: (args: BluetoothConfig) => Promise<void>;
+    listConnections: () => Promise<ConnectionSummary[]>;
+    /** Returns the newly-opened connection's id. */
+    connect: (portPath: string) => Promise<string>;
+    disconnect: (connId: string) => Promise<void>;
+
+    getState: (connId: string) => Promise<ConnectionState | null>;
+    getNodes: (connId: string) => Promise<NodeRecord[]>;
+    getMessages: (connId: string) => Promise<TextMessage[]>;
+    getTraces: (connId: string) => Promise<PacketTrace[]>;
+
+    sendText: (args: { connId: string; text: string; to?: number; channel?: number; wantAck?: boolean }) => Promise<TextMessage>;
+    sendTraceroute: (args: { connId: string; to: number; channel?: number }) => Promise<{ packetId: number; sentAt: number }>;
+    setOwner: (args: { connId: string; longName: string; shortName: string }) => Promise<void>;
+    setLoraConfig:      (args: { connId: string; config: LoRaConfigEdit }) => Promise<void>;
+    setDeviceConfig:    (args: { connId: string; config: DeviceConfig }) => Promise<void>;
+    setPositionConfig:  (args: { connId: string; config: PositionConfig }) => Promise<void>;
+    setPowerConfig:     (args: { connId: string; config: PowerConfig }) => Promise<void>;
+    setNetworkConfig:   (args: { connId: string; config: NetworkConfig }) => Promise<void>;
+    setDisplayConfig:   (args: { connId: string; config: DisplayConfig }) => Promise<void>;
+    setBluetoothConfig: (args: { connId: string; config: BluetoothConfig }) => Promise<void>;
+    setMqttConfig:      (args: { connId: string; config: MQTTConfig }) => Promise<void>;
+    setChannel:         (args: { connId: string; channel: ChannelEdit }) => Promise<void>;
+    getChannelSetUrl:   (connId: string) => Promise<string | null>;
+    applyChannelSetUrl: (args: { connId: string; url: string }) => Promise<boolean>;
+
     dbStats: () => Promise<DbStats>;
-    pathLossSamples: (args?: { sinceMs?: number }) => Promise<PathLossSample[]>;
+    pathLossSamples: (args?: { connId?: string; sinceMs?: number }) => Promise<PathLossSample[]>;
     telemetryHistory: (args?: { sinceMs?: number }) => Promise<TelemetryHistoryRow[]>;
     links: () => Promise<LinkRow[]>;
-    getTraces: () => Promise<PacketTrace[]>;
-    onState: (cb: (s: ConnectionState) => void) => () => void;
-    onNode: (cb: (n: NodeRecord) => void) => () => void;
-    onMessage: (cb: (m: TextMessage) => void) => () => void;
-    onMessageStatus: (cb: (m: TextMessage) => void) => () => void;
-    onPacket: (cb: (p: MeshPacketLite) => void) => () => void;
-    onTelemetrySample: (cb: (s: TelemetrySample) => void) => () => void;
-    onTracerouteSent: (cb: (t: TracerouteSent) => void) => () => void;
-    onTracerouteResponse: (cb: (t: TracerouteResponse) => void) => () => void;
-    onTraceUpdate: (cb: (t: PacketTrace) => void) => () => void;
+
+    onState: (cb: (p: { connId: string; state: ConnectionState }) => void) => () => void;
+    onNode: (cb: (p: { connId: string; node: NodeRecord }) => void) => () => void;
+    onMessage: (cb: (p: { connId: string; message: TextMessage }) => void) => () => void;
+    onMessageStatus: (cb: (p: { connId: string; message: TextMessage }) => void) => () => void;
+    onPacket: (cb: (p: { connId: string; packet: MeshPacketLite }) => void) => () => void;
+    onTelemetrySample: (cb: (p: { connId: string; sample: TelemetrySample }) => void) => () => void;
+    onTracerouteSent: (cb: (p: { connId: string; trace: TracerouteSent }) => void) => () => void;
+    onTracerouteResponse: (cb: (p: { connId: string; response: TracerouteResponse }) => void) => () => void;
+    onTraceUpdate: (cb: (p: { connId: string; trace: PacketTrace }) => void) => () => void;
+    onConnectionAdded: (cb: (p: { connId: string; portPath: string }) => void) => () => void;
+    onConnectionRemoved: (cb: (p: { connId: string }) => void) => () => void;
   }
 
   interface Window {

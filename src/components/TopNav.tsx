@@ -4,6 +4,8 @@ export type TabId =
   | 'home'
   | 'connect'
   | 'settings'
+  | 'mqtt'
+  | 'channels'
   | 'nodes'
   | 'map'
   | 'chat'
@@ -20,6 +22,9 @@ export type TabId =
   | 'reality'
   | 'expectations'
   | 'compare'
+  | 'radio-compare'
+  | 'link-test'
+  | 'health'
   | 'events'
   | 'concepts'
   | 'devices';
@@ -34,6 +39,8 @@ export const TABS: Tab[] = [
   { id: 'home',         label: 'Home',           group: 'app' },
   { id: 'connect',      label: 'Connect',        group: 'app' },
   { id: 'settings',     label: 'Settings',       group: 'app' },
+  { id: 'mqtt',         label: 'MQTT',           group: 'app' },
+  { id: 'channels',     label: 'Channels',       group: 'app' },
   { id: 'nodes',        label: 'Nodes',          group: 'live' },
   { id: 'map',          label: 'Map',            group: 'live' },
   { id: 'chat',         label: 'Chat',           group: 'live' },
@@ -41,6 +48,9 @@ export const TABS: Tab[] = [
   { id: 'traceroute',   label: 'Traceroute',     group: 'live' },
   { id: 'delivery',     label: 'Delivery',       group: 'live' },
   { id: 'sniffer',      label: 'Packet Sniffer', group: 'live' },
+  { id: 'radio-compare', label: 'Compare Radios', group: 'live' },
+  { id: 'link-test',    label: 'Link Test',      group: 'live' },
+  { id: 'health',       label: 'Mesh Health',    group: 'live' },
   { id: 'link-budget',   label: 'Link Budget',     group: 'learn' },
   { id: 'rssi-distance', label: 'RSSI vs Distance', group: 'learn' },
   { id: 'coverage',      label: 'Coverage',         group: 'learn' },

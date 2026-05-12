@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useMeshContext } from '../hooks/MeshContext';
 
 function pskDescription(pskLength: number): string {
   if (pskLength === 0) return 'open (no PSK)';
@@ -72,12 +73,17 @@ export function ConnectionWizard({
   lastPacketAt,
   packetsLast60s,
 }: Props) {
+  const { connections, activeConnId, setActiveConnId } = useMeshContext();
   const [ports, setPorts] = useState<PortInfo[]>([]);
   const [selected, setSelected] = useState<string>('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string>('');
   const [attempted, setAttempted] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [adding, setAdding] = useState(false);
+  // Ports already in use by an active connection — hide from picker.
+  const usedPorts = new Set(connections.map((c) => c.portPath).filter(Boolean) as string[]);
+  const availablePorts = ports.filter((p) => !usedPorts.has(p.path));
   // Tick once a second so "X ago" labels stay live.
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -89,24 +95,45 @@ export function ConnectionWizard({
   const refresh = async () => {
     const p = await window.mesh.listPorts();
     setPorts(p);
-    if (!selected && p.length) setSelected(p[0].path);
+    // Auto-select first available (non-used) port.
+    const free = p.filter((pp) => !usedPorts.has(pp.path));
+    if (!selected && free.length) setSelected(free[0].path);
   };
 
   useEffect(() => { refresh(); }, []);
+  // When the used-ports set changes (e.g., after a new radio connects), prune
+  // the current selection if it's no longer available.
+  useEffect(() => {
+    if (selected && usedPorts.has(selected)) {
+      const next = ports.find((p) => !usedPorts.has(p.path));
+      setSelected(next?.path ?? '');
+    }
+  }, [connections.length]);
 
   const connect = async () => {
     if (!selected) return;
     setBusy(true);
     setErr('');
     setAttempted(true);
-    try { await window.mesh.connect(selected); }
+    try {
+      const id = await window.mesh.connect(selected);
+      setActiveConnId(id);
+      setAdding(false);
+      setSelected('');
+    }
     catch (e: any) { setErr(e?.message ?? String(e)); }
     finally { setBusy(false); }
   };
 
   const disconnect = async () => {
+    if (!activeConnId) return;
     setBusy(true);
-    try { await window.mesh.disconnect(); } finally { setBusy(false); }
+    try { await window.mesh.disconnect(activeConnId); } finally { setBusy(false); }
+  };
+
+  const disconnectId = async (id: string) => {
+    setBusy(true);
+    try { await window.mesh.disconnect(id); } finally { setBusy(false); }
   };
 
   const isConnected = state.status === 'ready' || state.status === 'configuring';
@@ -117,7 +144,59 @@ export function ConnectionWizard({
 
   return (
     <div className="page">
-      <h1 className="page-title">Connect to your node</h1>
+      <h1 className="page-title">
+        {connections.length <= 1 ? 'Connect to your node' : `Connected radios (${connections.length})`}
+      </h1>
+
+      {/* Multi-radio picker — one chip per active connection plus an "add another" affordance */}
+      {connections.length > 0 && (
+        <div className="conn-chips">
+          {connections.map((c) => {
+            const isActive = c.connId === activeConnId;
+            const cMy = c.state.myInfo?.myNodeNum;
+            const cNode = cMy ? c.nodes.find((n) => n.num === cMy) : undefined;
+            const label = cNode?.shortName || cNode?.longName || c.portPath?.split('/').pop() || c.connId;
+            const dot =
+              c.state.status === 'ready' ? 'ok'
+              : c.state.status === 'disconnected' ? 'bad'
+              : 'warn';
+            const sub =
+              c.state.status === 'ready' ? `${c.nodes.length} nodes`
+              : c.state.status === 'configuring' ? 'syncing'
+              : c.state.status === 'connecting' ? 'opening'
+              : 'offline';
+            return (
+              <div
+                key={c.connId}
+                className={'conn-chip' + (isActive ? ' active' : '')}
+                onClick={() => setActiveConnId(c.connId)}
+                role="button"
+                tabIndex={0}
+              >
+                <span className={`status-dot ${dot}`} />
+                <div className="conn-chip-text">
+                  <div className="conn-chip-label">{label}</div>
+                  <div className="conn-chip-sub">
+                    {c.portPath?.split('/').pop()} · {sub}
+                  </div>
+                </div>
+                <button
+                  className="ghost conn-chip-close"
+                  onClick={(e) => { e.stopPropagation(); disconnectId(c.connId); }}
+                  title="Disconnect this radio"
+                >
+                  ✕
+                </button>
+              </div>
+            );
+          })}
+          {!adding && (
+            <button className="conn-chip-add" onClick={() => { setAdding(true); refresh(); }}>
+              + Add another radio
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Top dashboard strip — single row, scannable at a glance */}
       <div className="conn-strip">
@@ -141,14 +220,18 @@ export function ConnectionWizard({
         </div>
       </div>
 
-      {/* Port picker — full when not connected, single-line when connected */}
-      {!isConnected ? (
+      {/* Port picker — shown when not connected at all, or when explicitly adding another radio */}
+      {(!isConnected || adding) ? (
         <div className="card">
-          <h2 style={{ marginTop: 0 }}>Pick a port</h2>
+          <h2 style={{ marginTop: 0 }}>
+            {adding && connections.length > 0 ? 'Pick a port for an additional radio' : 'Pick a port'}
+          </h2>
           <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
             <select className="text" value={selected} onChange={(e) => setSelected(e.target.value)} style={{ flex: 1 }}>
-              {ports.length === 0 && <option value="">No serial ports found</option>}
-              {ports.map((p) => (
+              {availablePorts.length === 0 && (
+                <option value="">{ports.length === 0 ? 'No serial ports found' : 'No additional ports available'}</option>
+              )}
+              {availablePorts.map((p) => (
                 <option key={p.path} value={p.path}>
                   {confidenceBadge(p.confidence)} {p.path} — {p.description ?? p.manufacturer ?? 'unknown'}
                 </option>
@@ -158,16 +241,27 @@ export function ConnectionWizard({
             <button className="primary" disabled={busy || !selected} onClick={connect}>
               {busy ? 'Connecting…' : 'Connect'}
             </button>
+            {adding && (
+              <button className="ghost" onClick={() => { setAdding(false); setErr(''); }}>Cancel</button>
+            )}
           </div>
-          {ports.length > 0 && (
+          {availablePorts.length > 0 && (
             <p style={{ margin: '0 0 0 0', color: 'var(--text-faint)', fontSize: 11.5 }}>
               ✓ confirmed Meshtastic board · ◯ likely (USB-serial chip family) · · possibly any serial port. The protobuf handshake confirms the rest.
+              {usedPorts.size > 0 && ` · ${usedPorts.size} port${usedPorts.size === 1 ? '' : 's'} already in use, hidden.`}
             </p>
           )}
           {ports.length === 0 && (
             <div className="info-card" style={{ borderLeftColor: 'var(--warn)', marginTop: 8 }}>
               <p style={{ margin: '0 0 4px' }}><strong>No serial ports detected.</strong></p>
               <p style={{ margin: 0, fontSize: 12 }}>Make sure your node is plugged in with a <em>data</em> cable, not charge-only — that's the most common cause. On macOS, look for <code>/dev/cu.usbmodem*</code> or <code>/dev/cu.usbserial*</code>. ESP32-S3 native USB may take a couple of seconds to enumerate after plugging in.</p>
+            </div>
+          )}
+          {ports.length > 0 && availablePorts.length === 0 && (
+            <div className="info-card" style={{ marginTop: 8 }}>
+              <p style={{ margin: 0, fontSize: 12 }}>
+                All detected ports are already connected to a radio. Plug in another USB device and click <em>Rescan</em>.
+              </p>
             </div>
           )}
           {err && <div style={{ color: 'var(--bad)', marginTop: 8, fontFamily: 'var(--mono)', fontSize: 12 }}>{err}</div>}

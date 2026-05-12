@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as mt from '../concepts/translators/meshtastic';
 
 const MAX_UTIL_HISTORY = 240;
@@ -12,141 +12,272 @@ export interface TracerouteRecord {
   response?: TracerouteResponse;
 }
 
-export function useMesh() {
-  const [state, setState] = useState<ConnectionState>({ status: 'disconnected' });
-  const [nodes, setNodes] = useState<NodeRecord[]>([]);
-  const [messages, setMessages] = useState<TextMessage[]>([]);
-  const [packetCount, setPacketCount] = useState(0);
-  const [recentRssi, setRecentRssi] = useState<number[]>([]);
-  const [utilHistory, setUtilHistory] = useState<UtilPoint[]>([]);
-  const [traceroutes, setTraceroutes] = useState<TracerouteRecord[]>([]);
-  const [lastPacketAt, setLastPacketAt] = useState<number | null>(null);
-  // Connection lifecycle markers for the wizard.
-  const [connectStartedAt, setConnectStartedAt] = useState<number | null>(null);
-  const [readyAt, setReadyAt] = useState<number | null>(null);
-  const [packetTimestamps, setPacketTimestamps] = useState<number[]>([]);
-  const [links, setLinks] = useState<LinkRow[]>([]);
-  const [traces, setTraces] = useState<PacketTrace[]>([]);
-  const [recentPackets, setRecentPackets] = useState<Array<MeshPacketLite & { receivedAt: number }>>([]);
-  const priorNodesRef = useRef<Map<number, NodeRecord>>(new Map());
-  const prevStatusRef = useRef<ConnectionState['status']>('disconnected');
+/** All per-connection state that the UI cares about. */
+export interface ConnectionView {
+  connId: string;
+  state: ConnectionState;
+  portPath?: string;
+  nodes: NodeRecord[];
+  messages: TextMessage[];
+  packetCount: number;
+  recentRssi: number[];
+  utilHistory: UtilPoint[];
+  traceroutes: TracerouteRecord[];
+  traces: PacketTrace[];
+  recentPackets: Array<MeshPacketLite & { receivedAt: number }>;
+  lastPacketAt: number | null;
+  connectStartedAt: number | null;
+  readyAt: number | null;
+  packetTimestamps: number[];
+}
 
+function emptyView(connId: string, state?: ConnectionState, portPath?: string): ConnectionView {
+  return {
+    connId,
+    state: state ?? { status: 'disconnected' },
+    portPath,
+    nodes: [],
+    messages: [],
+    packetCount: 0,
+    recentRssi: [],
+    utilHistory: [],
+    traceroutes: [],
+    traces: [],
+    recentPackets: [],
+    lastPacketAt: null,
+    connectStartedAt: null,
+    readyAt: null,
+    packetTimestamps: [],
+  };
+}
+
+export function useMesh() {
+  const [views, setViews] = useState<Map<string, ConnectionView>>(new Map());
+  const [activeConnId, setActiveConnIdState] = useState<string | null>(null);
+  const [links, setLinks] = useState<LinkRow[]>([]);
+  const priorNodesRef = useRef<Map<string, NodeRecord>>(new Map());
+  const prevStatusRef = useRef<Map<string, ConnectionState['status']>>(new Map());
+
+  const updateView = useCallback(
+    (connId: string, updater: (v: ConnectionView) => ConnectionView) => {
+      setViews((prev) => {
+        const cur = prev.get(connId);
+        if (!cur) return prev; // ignore events for unknown connections
+        const next = new Map(prev);
+        next.set(connId, updater(cur));
+        return next;
+      });
+    },
+    [],
+  );
+
+  // Bootstrap: load any pre-existing connections (helps on renderer reload).
   useEffect(() => {
     let mounted = true;
+    (async () => {
+      const conns = await window.mesh.listConnections();
+      if (!mounted) return;
+      const next = new Map<string, ConnectionView>();
+      for (const c of conns) {
+        next.set(c.connId, emptyView(c.connId, c.state, c.portPath));
+      }
+      setViews(next);
+      if (conns.length > 0) setActiveConnIdState((cur) => cur ?? conns[0].connId);
 
-    window.mesh.getState().then((s) => mounted && setState(s));
-    window.mesh.getNodes().then((n) => {
-      if (!mounted) return;
-      setNodes(n);
-      for (const node of n) {
-        mt.publishNode(node, priorNodesRef.current.get(node.num));
-        priorNodesRef.current.set(node.num, node);
-      }
-    });
-    window.mesh.getMessages().then((m) => mounted && setMessages(m));
-    const refreshLinks = () => window.mesh.links().then((l) => mounted && setLinks(l));
-    refreshLinks();
-    const linksTimer = setInterval(refreshLinks, 5000);
-    window.mesh.getTraces().then((t) => mounted && setTraces(t));
-    const offTrace = window.mesh.onTraceUpdate((t) => {
-      if (!mounted) return;
-      setTraces((prev) => {
-        const idx = prev.findIndex((x) => x.packetId === t.packetId);
-        if (idx >= 0) {
-          const next = [...prev];
-          next[idx] = t;
-          return next;
-        }
-        return [t, ...prev].slice(0, 100);
-      });
-    });
+      // Hydrate nodes/messages/traces per connection.
+      await Promise.all(
+        conns.map(async (c) => {
+          const [n, m, t] = await Promise.all([
+            window.mesh.getNodes(c.connId),
+            window.mesh.getMessages(c.connId),
+            window.mesh.getTraces(c.connId),
+          ]);
+          if (!mounted) return;
+          for (const node of n) {
+            const k = `${c.connId}:${node.num}`;
+            mt.publishNode(node, priorNodesRef.current.get(k));
+            priorNodesRef.current.set(k, node);
+          }
+          setViews((prev) => {
+            const cur = prev.get(c.connId);
+            if (!cur) return prev;
+            const next2 = new Map(prev);
+            next2.set(c.connId, { ...cur, nodes: n, messages: m, traces: t });
+            return next2;
+          });
+        }),
+      );
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
-    const offState = window.mesh.onState((s) => {
-      if (!mounted) return;
-      const prev = prevStatusRef.current;
-      if (prev === 'disconnected' && (s.status === 'connecting' || s.status === 'configuring')) {
-        setConnectStartedAt(Date.now());
-        setReadyAt(null);
-      }
-      if (prev !== 'ready' && s.status === 'ready') {
-        setReadyAt(Date.now());
-      }
-      if (s.status === 'disconnected') {
-        setReadyAt(null);
-      }
-      prevStatusRef.current = s.status;
-      setState(s);
-    });
-    const offNode = window.mesh.onNode((node) => {
-      if (!mounted) return;
-      mt.publishNode(node, priorNodesRef.current.get(node.num));
-      priorNodesRef.current.set(node.num, node);
-      window.mesh.getNodes().then((n) => mounted && setNodes(n));
-    });
-    const offMessage = window.mesh.onMessage((m) => {
-      if (!mounted) return;
-      mt.publishMessage(m);
-      setMessages((prev) => {
-        const idx = prev.findIndex((x) => x.id === m.id && x.from === m.from);
-        if (idx >= 0) {
-          const next = [...prev];
-          next[idx] = m;
-          return next;
-        }
-        return [...prev, m];
-      });
-    });
-    const offMessageStatus = window.mesh.onMessageStatus((m) => {
-      if (!mounted) return;
-      setMessages((prev) => prev.map((x) => (x.id === m.id && x.from === m.from ? { ...x, ackStatus: m.ackStatus, ackError: m.ackError } : x)));
-    });
-    const offPacket = window.mesh.onPacket((p) => {
-      if (!mounted) return;
-      mt.publishPacket(p);
-      const now = Date.now();
-      setPacketCount((c) => c + 1);
-      setLastPacketAt(now);
-      setPacketTimestamps((prev) => {
-        const cutoff = now - 60_000;
-        return [...prev, now].filter((t) => t >= cutoff);
-      });
-      if (p.rxRssi !== 0) {
-        setRecentRssi((prev) => [...prev.slice(-99), p.rxRssi]);
-      }
-      // Keep a rolling buffer (newest first) capped at 1000 for the Sniffer.
-      setRecentPackets((prev) => [{ ...p, receivedAt: now }, ...prev].slice(0, 1000));
-    });
-    const offUtil = window.mesh.onTelemetrySample((s) => {
-      if (!mounted) return;
-      mt.publishTelemetry(s);
-      setUtilHistory((prev) => {
-        const next = [...prev, { t: s.timestamp, chanUtil: s.channelUtilization, airUtilTx: s.airUtilTx, nodeId: s.nodeId }];
-        return next.length > MAX_UTIL_HISTORY ? next.slice(-MAX_UTIL_HISTORY) : next;
-      });
-    });
-    const offTrSent = window.mesh.onTracerouteSent((t) => {
-      if (!mounted) return;
-      mt.publishTraceroute(t);
-      setTraceroutes((prev) => [{ packetId: t.packetId, to: t.to, sentAt: t.sentAt }, ...prev].slice(0, 20));
-    });
-    const offTrResp = window.mesh.onTracerouteResponse((resp) => {
-      if (!mounted) return;
-      mt.publishTracerouteResponse(resp);
-      setTraceroutes((prev) => {
-        const idx = prev.findIndex((r) => r.to === resp.from && !r.response);
-        if (idx === -1) {
-          return [{ packetId: 0, to: resp.from, sentAt: resp.receivedAt, response: resp }, ...prev].slice(0, 20);
-        }
-        const next = [...prev];
-        next[idx] = { ...next[idx], response: resp };
+  // Links are global / cross-radio (derived from the shared DB).
+  useEffect(() => {
+    let mounted = true;
+    const refresh = () => window.mesh.links().then((l) => mounted && setLinks(l));
+    refresh();
+    const t = setInterval(refresh, 5000);
+    return () => { mounted = false; clearInterval(t); };
+  }, []);
+
+  // Wire all event streams once. Every event carries a connId so we can route it.
+  useEffect(() => {
+    const offConnAdded = window.mesh.onConnectionAdded(({ connId, portPath }) => {
+      setViews((prev) => {
+        if (prev.has(connId)) return prev;
+        const next = new Map(prev);
+        next.set(connId, emptyView(connId, { status: 'connecting', portPath }, portPath));
         return next;
+      });
+      setActiveConnIdState((cur) => cur ?? connId);
+    });
+
+    const offConnRemoved = window.mesh.onConnectionRemoved(({ connId }) => {
+      setViews((prev) => {
+        if (!prev.has(connId)) return prev;
+        const next = new Map(prev);
+        next.delete(connId);
+        return next;
+      });
+      setActiveConnIdState((cur) => {
+        if (cur !== connId) return cur;
+        // Pick another connection if available.
+        const remaining = Array.from(views.keys()).filter((k) => k !== connId);
+        return remaining[0] ?? null;
+      });
+    });
+
+    const offState = window.mesh.onState(({ connId, state }) => {
+      const prev = prevStatusRef.current.get(connId) ?? 'disconnected';
+      let connectStartedDelta: number | null | undefined;
+      let readyDelta: number | null | undefined;
+      if (prev === 'disconnected' && (state.status === 'connecting' || state.status === 'configuring')) {
+        connectStartedDelta = Date.now();
+        readyDelta = null;
+      }
+      if (prev !== 'ready' && state.status === 'ready') {
+        readyDelta = Date.now();
+      }
+      if (state.status === 'disconnected') {
+        readyDelta = null;
+      }
+      prevStatusRef.current.set(connId, state.status);
+
+      // Ensure the view exists (state events can arrive before connection-added in some races).
+      setViews((prevMap) => {
+        const cur = prevMap.get(connId) ?? emptyView(connId, state, state.portPath);
+        const next = new Map(prevMap);
+        next.set(connId, {
+          ...cur,
+          state,
+          portPath: state.portPath ?? cur.portPath,
+          connectStartedAt: connectStartedDelta !== undefined ? connectStartedDelta : cur.connectStartedAt,
+          readyAt: readyDelta !== undefined ? readyDelta : cur.readyAt,
+        });
+        return next;
+      });
+      setActiveConnIdState((cur) => cur ?? connId);
+    });
+
+    const offNode = window.mesh.onNode(({ connId, node }) => {
+      const k = `${connId}:${node.num}`;
+      mt.publishNode(node, priorNodesRef.current.get(k));
+      priorNodesRef.current.set(k, node);
+      // Refetch full node list for this connection to keep ordering stable.
+      window.mesh.getNodes(connId).then((nodes) => {
+        updateView(connId, (v) => ({ ...v, nodes }));
+      });
+    });
+
+    const offMessage = window.mesh.onMessage(({ connId, message }) => {
+      mt.publishMessage(message);
+      updateView(connId, (v) => {
+        const idx = v.messages.findIndex((x) => x.id === message.id && x.from === message.from);
+        const messages =
+          idx >= 0
+            ? v.messages.map((x, i) => (i === idx ? message : x))
+            : [...v.messages, message];
+        return { ...v, messages };
+      });
+    });
+
+    const offMessageStatus = window.mesh.onMessageStatus(({ connId, message }) => {
+      updateView(connId, (v) => ({
+        ...v,
+        messages: v.messages.map((x) =>
+          x.id === message.id && x.from === message.from
+            ? { ...x, ackStatus: message.ackStatus, ackError: message.ackError }
+            : x,
+        ),
+      }));
+    });
+
+    const offPacket = window.mesh.onPacket(({ connId, packet }) => {
+      mt.publishPacket(packet);
+      const now = Date.now();
+      updateView(connId, (v) => {
+        const cutoff = now - 60_000;
+        return {
+          ...v,
+          packetCount: v.packetCount + 1,
+          lastPacketAt: now,
+          packetTimestamps: [...v.packetTimestamps, now].filter((t) => t >= cutoff),
+          recentRssi: packet.rxRssi !== 0 ? [...v.recentRssi.slice(-99), packet.rxRssi] : v.recentRssi,
+          recentPackets: [{ ...packet, receivedAt: now }, ...v.recentPackets].slice(0, 1000),
+        };
+      });
+    });
+
+    const offUtil = window.mesh.onTelemetrySample(({ connId, sample }) => {
+      mt.publishTelemetry(sample);
+      updateView(connId, (v) => {
+        const next = [
+          ...v.utilHistory,
+          { t: sample.timestamp, chanUtil: sample.channelUtilization, airUtilTx: sample.airUtilTx, nodeId: sample.nodeId },
+        ];
+        return { ...v, utilHistory: next.length > MAX_UTIL_HISTORY ? next.slice(-MAX_UTIL_HISTORY) : next };
+      });
+    });
+
+    const offTrSent = window.mesh.onTracerouteSent(({ connId, trace }) => {
+      mt.publishTraceroute(trace);
+      updateView(connId, (v) => ({
+        ...v,
+        traceroutes: [{ packetId: trace.packetId, to: trace.to, sentAt: trace.sentAt }, ...v.traceroutes].slice(0, 20),
+      }));
+    });
+
+    const offTrResp = window.mesh.onTracerouteResponse(({ connId, response }) => {
+      mt.publishTracerouteResponse(response);
+      updateView(connId, (v) => {
+        const idx = v.traceroutes.findIndex((r) => r.to === response.from && !r.response);
+        if (idx === -1) {
+          return {
+            ...v,
+            traceroutes: [{ packetId: 0, to: response.from, sentAt: response.receivedAt, response }, ...v.traceroutes].slice(0, 20),
+          };
+        }
+        const next = [...v.traceroutes];
+        next[idx] = { ...next[idx], response };
+        return { ...v, traceroutes: next };
+      });
+    });
+
+    const offTrace = window.mesh.onTraceUpdate(({ connId, trace }) => {
+      updateView(connId, (v) => {
+        const idx = v.traces.findIndex((x) => x.packetId === trace.packetId);
+        const traces = idx >= 0
+          ? v.traces.map((x, i) => (i === idx ? trace : x))
+          : [trace, ...v.traces].slice(0, 100);
+        return { ...v, traces };
       });
     });
 
     return () => {
-      mounted = false;
-      clearInterval(linksTimer);
-      offTrace();
+      offConnAdded();
+      offConnRemoved();
       offState();
       offNode();
       offMessage();
@@ -155,12 +286,43 @@ export function useMesh() {
       offUtil();
       offTrSent();
       offTrResp();
+      offTrace();
     };
+    // We intentionally don't list `views` here — these listeners should be set up once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [updateView]);
+
+  const connections = useMemo(() => Array.from(views.values()), [views]);
+  const active = activeConnId ? views.get(activeConnId) ?? null : null;
+
+  const setActiveConnId = useCallback((id: string | null) => {
+    setActiveConnIdState(id);
   }, []);
 
+  // Project active view as flat returns so existing panels need no changes.
+  const empty = emptyView('');
+  const projected = active ?? empty;
+
   return {
-    state, nodes, messages, packetCount, recentRssi, utilHistory, traceroutes, links, traces, recentPackets,
-    lastPacketAt, connectStartedAt, readyAt,
-    packetsLast60s: packetTimestamps.length,
+    // Per-connection projection of the active radio:
+    state: projected.state,
+    nodes: projected.nodes,
+    messages: projected.messages,
+    packetCount: projected.packetCount,
+    recentRssi: projected.recentRssi,
+    utilHistory: projected.utilHistory,
+    traceroutes: projected.traceroutes,
+    traces: projected.traces,
+    recentPackets: projected.recentPackets,
+    lastPacketAt: projected.lastPacketAt,
+    connectStartedAt: projected.connectStartedAt,
+    readyAt: projected.readyAt,
+    packetsLast60s: projected.packetTimestamps.length,
+    // Cross-connection (DB-derived):
+    links,
+    // Multi-radio API:
+    connections,
+    activeConnId,
+    setActiveConnId,
   };
 }

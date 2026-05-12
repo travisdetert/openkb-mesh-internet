@@ -126,7 +126,13 @@ export class MeshtasticSerialConnection {
 
     this.port.write(frame, (err) => {
       if (err) {
+        console.error(`[serial:${this.portPath}] write FAILED (${payload.length}b):`, err.message);
         this.emitError(new Error(`Serial write failed: ${err.message}`));
+      } else {
+        // Log everything except heartbeats (4-byte frames) — those are too noisy.
+        if (payload.length > 6) {
+          console.log(`[serial:${this.portPath}] wrote ${payload.length}b: ${Buffer.from(payload.slice(0, 20)).toString('hex')}${payload.length > 20 ? '…' : ''}`);
+        }
       }
     });
   }

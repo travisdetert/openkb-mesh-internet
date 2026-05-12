@@ -4,6 +4,8 @@ import { Sidebar } from './components/Sidebar';
 import { HomePage } from './components/HomePage';
 import { ConnectionWizard } from './components/ConnectionWizard';
 import { SettingsPanel } from './components/panels/SettingsPanel';
+import { MqttPanel } from './components/panels/MqttPanel';
+import { ChannelsPanel } from './components/panels/ChannelsPanel';
 import { NodesPanel } from './components/panels/NodesPanel';
 import { PositionMapPanel } from './components/panels/PositionMapPanel';
 import { ChatPanel } from './components/panels/ChatPanel';
@@ -11,6 +13,9 @@ import { TelemetryPanel } from './components/panels/TelemetryPanel';
 import { TraceroutePanel } from './components/panels/TraceroutePanel';
 import { DeliveryPanel } from './components/panels/DeliveryPanel';
 import { PacketSnifferPanel } from './components/panels/PacketSnifferPanel';
+import { RadioComparePanel } from './components/panels/RadioComparePanel';
+import { MeshHealthPanel } from './components/panels/MeshHealthPanel';
+import { LinkTestPanel } from './components/panels/LinkTestPanel';
 import { LinkBudgetPanel } from './components/learning/LinkBudgetPanel';
 import { SignalDistancePanel } from './components/learning/SignalDistancePanel';
 import { CoveragePanel } from './components/learning/CoveragePanel';
@@ -24,6 +29,7 @@ import { ExpectationPanel } from './components/ExpectationPanel';
 import { ComparePanel } from './components/ComparePanel';
 import { EventFeedPanel } from './components/EventFeedPanel';
 import { useMesh } from './hooks/useMesh';
+import { MeshContext } from './hooks/MeshContext';
 
 export type ChatTarget =
   | { kind: 'channel'; index: number }
@@ -88,6 +94,13 @@ export function App() {
   };
 
   return (
+    <MeshContext.Provider
+      value={{
+        connections: mesh.connections,
+        activeConnId: mesh.activeConnId,
+        setActiveConnId: mesh.setActiveConnId,
+      }}
+    >
     <div className="app">
       <Sidebar
         active={tab}
@@ -101,6 +114,9 @@ export function App() {
         unreadMessages={unreadMessages}
         pulseKey={pulseKey}
         chatPulseKey={chatPulseKey}
+        connections={mesh.connections}
+        activeConnId={mesh.activeConnId}
+        onSelectConnection={mesh.setActiveConnId}
       />
       <main className="main">
       {tab === 'home' && (
@@ -114,6 +130,8 @@ export function App() {
         />
       )}
       {tab === 'settings' && <SettingsPanel state={mesh.state} />}
+      {tab === 'mqtt' && <MqttPanel state={mesh.state} nodes={mesh.nodes} recentPackets={mesh.recentPackets} />}
+      {tab === 'channels' && <ChannelsPanel state={mesh.state} />}
       {tab === 'connect' && (
         <ConnectionWizard
           state={mesh.state}
@@ -133,6 +151,20 @@ export function App() {
       {tab === 'traceroute' && <TraceroutePanel nodes={mesh.nodes} state={mesh.state} traceroutes={mesh.traceroutes} onMessageNode={openDm} />}
       {tab === 'delivery' && <DeliveryPanel traces={mesh.traces} nodes={mesh.nodes} state={mesh.state} />}
       {tab === 'sniffer' && <PacketSnifferPanel packets={mesh.recentPackets} packetCount={mesh.packetCount} nodes={mesh.nodes} state={mesh.state} onMessageNode={openDm} />}
+      {tab === 'radio-compare' && <RadioComparePanel />}
+      {tab === 'link-test' && <LinkTestPanel />}
+      {tab === 'health' && (
+        <MeshHealthPanel
+          state={mesh.state}
+          nodes={mesh.nodes}
+          traces={mesh.traces}
+          links={mesh.links}
+          recentPackets={mesh.recentPackets}
+          packetsLast60s={mesh.packetsLast60s}
+          lastPacketAt={mesh.lastPacketAt}
+          go={setTab}
+        />
+      )}
       {tab === 'link-budget' && <LinkBudgetPanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} go={setTab} />}
       {tab === 'rssi-distance' && <SignalDistancePanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} />}
       {tab === 'coverage' && <CoveragePanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} />}
@@ -147,5 +179,6 @@ export function App() {
       {tab === 'concepts' && <ConceptsPanel />}
       </main>
     </div>
+    </MeshContext.Provider>
   );
 }

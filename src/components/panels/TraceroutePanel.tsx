@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { TracerouteRecord } from '../../hooks/useMesh';
+import { useActiveConnId } from '../../hooks/MeshContext';
 
 interface Props {
   nodes: NodeRecord[];
@@ -127,6 +128,7 @@ export function TraceroutePanel({ nodes, state, traceroutes, onMessageNode }: Pr
 // ─────────────────────────────────────────────────────────────────────
 
 function RunTab({ nodes, state, traceroutes, onMessageNode }: { nodes: NodeRecord[]; state: ConnectionState; traceroutes: TracerouteRecord[]; onMessageNode?: (num: number) => void }) {
+  const connId = useActiveConnId();
   const [target, setTarget] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -142,22 +144,23 @@ function RunTab({ nodes, state, traceroutes, onMessageNode }: { nodes: NodeRecor
   }, [remoteNodes, target]);
 
   const trace = async () => {
-    if (target === null) return;
+    if (target === null || !connId) return;
     setBusy(true); setErr('');
     try {
-      await window.mesh.sendTraceroute({ to: target });
+      await window.mesh.sendTraceroute({ connId, to: target });
     } catch (e: any) { setErr(e?.message ?? String(e)); }
     finally { setBusy(false); }
   };
 
   const traceTopFive = async () => {
+    if (!connId) return;
     setBatchBusy(true); setErr('');
     try {
       // Spread requests 30s apart to respect typical Meshtastic traceroute
       // throttling and avoid swamping the channel.
       const top = remoteNodes.filter((n) => n.lastHeard).slice(0, 5);
       for (let i = 0; i < top.length; i++) {
-        await window.mesh.sendTraceroute({ to: top[i].num });
+        await window.mesh.sendTraceroute({ connId, to: top[i].num });
         if (i < top.length - 1) await new Promise((r) => setTimeout(r, 30000));
       }
     } catch (e: any) { setErr(e?.message ?? String(e)); }

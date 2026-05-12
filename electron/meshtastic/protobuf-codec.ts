@@ -49,6 +49,7 @@ export interface FromRadioMessage {
   networkConfig?: NetworkConfigMsg;
   displayConfig?: DisplayConfigMsg;
   bluetoothConfig?: BluetoothConfigMsg;
+  mqttConfig?: MQTTConfigMsg;
   channel?: ChannelMsg;
   metadata?: DeviceMetadataMsg;
 }
@@ -109,6 +110,33 @@ export interface BluetoothConfigMsg {
   fixedPin: number;
 }
 
+/** Module-level MQTT config — broker, encryption, topic routing, optional public-map reporting. */
+export interface MQTTConfigMsg {
+  /** Master switch — when false the radio does not connect to any broker. */
+  enabled: boolean;
+  /** Broker address. Blank = use the default public broker at mqtt.meshtastic.org. */
+  address: string;
+  username: string;
+  /** The password is write-only on the radio; reads come back blank. */
+  password: string;
+  /** When on, packets are encrypted with channel PSK before publishing (default). */
+  encryptionEnabled: boolean;
+  /** When on, the radio additionally publishes a JSON debug stream (unencrypted). */
+  jsonEnabled: boolean;
+  /** Use TLS on the broker connection. Required by some private brokers. */
+  tlsEnabled: boolean;
+  /** Topic prefix. Blank = "msh/". */
+  root: string;
+  /** When on, the radio proxies its MQTT stream through the connected client (no WiFi needed). */
+  proxyToClientEnabled: boolean;
+  /** When on, publishes the radio's position to the public Meshtastic map. */
+  mapReportingEnabled: boolean;
+  /** Map-reporting cadence in seconds. */
+  mapReportPublishIntervalSecs?: number;
+  /** Position precision for map publishes (bits — 0 = full, lower = coarser). */
+  mapReportPositionPrecision?: number;
+}
+
 export interface MyInfo {
   myNodeNum: number;
   firmwareVersion: string;
@@ -150,6 +178,18 @@ export interface ChannelMsg {
   roleName: string;
   name: string;
   pskLength: number;
+  /** Raw PSK bytes (0–32 bytes). Travels to the renderer as a number array via IPC. */
+  psk: number[];
+  uplinkEnabled: boolean;
+  downlinkEnabled: boolean;
+}
+
+/** Editable payload for SetChannel — fields here mirror what the radio accepts. */
+export interface ChannelEdit {
+  index: number;
+  role: number; // 0=disabled, 1=primary, 2=secondary
+  name: string;
+  psk: number[];
   uplinkEnabled: boolean;
   downlinkEnabled: boolean;
 }
@@ -283,6 +323,20 @@ export function decodeFromRadio(bytes: Uint8Array): FromRadioMessage {
         case 'display':   out.displayConfig = mapDisplayConfig(sub.value); break;
         case 'bluetooth': out.bluetoothConfig = mapBluetoothConfig(sub.value); break;
       }
+      break;
+    }
+    case 'moduleConfig': {
+      const mc = variant.value;
+      const sub = mc.payloadVariant;
+      if (!sub) break;
+      // We use the 'config' type marker so downstream consumers don't need a
+      // new branch — the controller dispatches on which field is populated.
+      out.type = 'config';
+      if (sub.case === 'mqtt') {
+        out.mqttConfig = mapMqttConfig(sub.value);
+      }
+      // Other ModuleConfig variants (serial, telemetry, store_forward, etc.)
+      // are intentionally ignored for now.
       break;
     }
     case 'channel': {
@@ -455,13 +509,32 @@ function mapBluetoothConfig(c: any): BluetoothConfigMsg {
   };
 }
 
+function mapMqttConfig(c: any): MQTTConfigMsg {
+  return {
+    enabled: !!c.enabled,
+    address: c.address ?? '',
+    username: c.username ?? '',
+    password: c.password ?? '',
+    encryptionEnabled: !!c.encryptionEnabled,
+    jsonEnabled: !!c.jsonEnabled,
+    tlsEnabled: !!c.tlsEnabled,
+    root: c.root ?? '',
+    proxyToClientEnabled: !!c.proxyToClientEnabled,
+    mapReportingEnabled: !!c.mapReportingEnabled,
+    mapReportPublishIntervalSecs: c.mapReportSettings?.publishIntervalSecs,
+    mapReportPositionPrecision: c.mapReportSettings?.positionPrecision,
+  };
+}
+
 function mapChannel(c: any): ChannelMsg {
+  const psk: Uint8Array | undefined = c.settings?.psk;
   return {
     index: c.index ?? 0,
     role: c.role ?? 0,
     roleName: CHANNEL_ROLES[c.role] ?? `unknown(${c.role})`,
     name: c.settings?.name ?? '',
-    pskLength: c.settings?.psk?.length ?? 0,
+    pskLength: psk?.length ?? 0,
+    psk: psk ? Array.from(psk) : [],
     uplinkEnabled: !!c.settings?.uplinkEnabled,
     downlinkEnabled: !!c.settings?.downlinkEnabled,
   };
@@ -688,8 +761,12 @@ export interface LoRaConfigEdit {
 /**
  * Send a SetConfig admin message to update the radio's LoRa config.
  * The device will typically reboot after applying — reconnect in ~10s.
+ *
+ * `to` MUST be the radio's own node number. Meshtastic firmware drops admin
+ * messages with to=0 (broadcast/unset) — they look like remote admin and fail
+ * the local-admin exemption check.
  */
-export function encodeToRadio_SetLoraConfig(lora: LoRaConfigEdit): Uint8Array {
+export function encodeToRadio_SetLoraConfig(to: number, lora: LoRaConfigEdit): Uint8Array {
   ensureReady();
   const loraMsg = create!(Proto.Config.Config_LoRaConfigSchema, {
     usePreset: lora.usePreset,
@@ -719,7 +796,7 @@ export function encodeToRadio_SetLoraConfig(lora: LoRaConfigEdit): Uint8Array {
     wantResponse: false,
   });
   const packet = create!(Proto.Mesh.MeshPacketSchema, {
-    to: 0,
+    to,
     wantAck: false,
     id: (Math.random() * 0xffffffff) >>> 0,
     payloadVariant: { case: 'decoded', value: data },
@@ -732,8 +809,9 @@ export function encodeToRadio_SetLoraConfig(lora: LoRaConfigEdit): Uint8Array {
 
 // Generic admin-message wrapper: takes the variant tag + value, builds the
 // AdminMessage + Data + MeshPacket + ToRadio chain. Used by every setConfig
-// helper below.
-function wrapAdminConfig(variantCase: string, configInner: any): Uint8Array {
+// helper below. `to` MUST be the local node's number (self-admin); the firmware
+// drops admin messages addressed to to=0.
+function wrapAdminConfig(to: number, variantCase: string, configInner: any): Uint8Array {
   ensureReady();
   const config = create!(Proto.Config.ConfigSchema, {
     payloadVariant: { case: variantCase, value: configInner },
@@ -747,7 +825,7 @@ function wrapAdminConfig(variantCase: string, configInner: any): Uint8Array {
     wantResponse: false,
   });
   const packet = create!(Proto.Mesh.MeshPacketSchema, {
-    to: 0,
+    to,
     wantAck: false,
     id: (Math.random() * 0xffffffff) >>> 0,
     payloadVariant: { case: 'decoded', value: data },
@@ -758,32 +836,196 @@ function wrapAdminConfig(variantCase: string, configInner: any): Uint8Array {
   return toBinary!(Proto.Mesh.ToRadioSchema, msg);
 }
 
-export function encodeToRadio_SetDeviceConfig(c: DeviceConfigMsg): Uint8Array {
+export function encodeToRadio_SetDeviceConfig(to: number, c: DeviceConfigMsg): Uint8Array {
   ensureReady();
-  return wrapAdminConfig('device', create!(Proto.Config.Config_DeviceConfigSchema, c as any));
+  return wrapAdminConfig(to, 'device', create!(Proto.Config.Config_DeviceConfigSchema, c as any));
 }
-export function encodeToRadio_SetPositionConfig(c: PositionConfigMsg): Uint8Array {
+export function encodeToRadio_SetPositionConfig(to: number, c: PositionConfigMsg): Uint8Array {
   ensureReady();
-  return wrapAdminConfig('position', create!(Proto.Config.Config_PositionConfigSchema, c as any));
+  return wrapAdminConfig(to, 'position', create!(Proto.Config.Config_PositionConfigSchema, c as any));
 }
-export function encodeToRadio_SetPowerConfig(c: PowerConfigMsg): Uint8Array {
+export function encodeToRadio_SetPowerConfig(to: number, c: PowerConfigMsg): Uint8Array {
   ensureReady();
-  return wrapAdminConfig('power', create!(Proto.Config.Config_PowerConfigSchema, c as any));
+  return wrapAdminConfig(to, 'power', create!(Proto.Config.Config_PowerConfigSchema, c as any));
 }
-export function encodeToRadio_SetNetworkConfig(c: NetworkConfigMsg): Uint8Array {
+export function encodeToRadio_SetNetworkConfig(to: number, c: NetworkConfigMsg): Uint8Array {
   ensureReady();
-  return wrapAdminConfig('network', create!(Proto.Config.Config_NetworkConfigSchema, c as any));
+  return wrapAdminConfig(to, 'network', create!(Proto.Config.Config_NetworkConfigSchema, c as any));
 }
-export function encodeToRadio_SetDisplayConfig(c: DisplayConfigMsg): Uint8Array {
+export function encodeToRadio_SetDisplayConfig(to: number, c: DisplayConfigMsg): Uint8Array {
   ensureReady();
-  return wrapAdminConfig('display', create!(Proto.Config.Config_DisplayConfigSchema, c as any));
+  return wrapAdminConfig(to, 'display', create!(Proto.Config.Config_DisplayConfigSchema, c as any));
 }
-export function encodeToRadio_SetBluetoothConfig(c: BluetoothConfigMsg): Uint8Array {
+export function encodeToRadio_SetBluetoothConfig(to: number, c: BluetoothConfigMsg): Uint8Array {
   ensureReady();
-  return wrapAdminConfig('bluetooth', create!(Proto.Config.Config_BluetoothConfigSchema, c as any));
+  return wrapAdminConfig(to, 'bluetooth', create!(Proto.Config.Config_BluetoothConfigSchema, c as any));
 }
 
-export function encodeToRadio_SetOwner(args: { longName: string; shortName: string; }): Uint8Array {
+/**
+ * Send a SetModuleConfig (mqtt variant) admin message. Unlike the per-Config
+ * setters above, MQTT lives under ModuleConfig — the admin payload variant is
+ * `setModuleConfig` rather than `setConfig`.
+ *
+ * `to` MUST be the radio's own node number; see encodeToRadio_SetLoraConfig.
+ */
+export function encodeToRadio_SetMqttConfig(to: number, c: MQTTConfigMsg): Uint8Array {
+  ensureReady();
+  const mapReportSettings = (c.mapReportPublishIntervalSecs || c.mapReportPositionPrecision)
+    ? create!(Proto.ModuleConfig.ModuleConfig_MapReportSettingsSchema, {
+        publishIntervalSecs: c.mapReportPublishIntervalSecs ?? 0,
+        positionPrecision: c.mapReportPositionPrecision ?? 0,
+      })
+    : undefined;
+  const mqttInner = create!(Proto.ModuleConfig.ModuleConfig_MQTTConfigSchema, {
+    enabled: c.enabled,
+    address: c.address,
+    username: c.username,
+    password: c.password,
+    encryptionEnabled: c.encryptionEnabled,
+    jsonEnabled: c.jsonEnabled,
+    tlsEnabled: c.tlsEnabled,
+    root: c.root,
+    proxyToClientEnabled: c.proxyToClientEnabled,
+    mapReportingEnabled: c.mapReportingEnabled,
+    ...(mapReportSettings ? { mapReportSettings } : {}),
+  });
+  const moduleConfig = create!(Proto.ModuleConfig.ModuleConfigSchema, {
+    payloadVariant: { case: 'mqtt', value: mqttInner },
+  });
+  const admin = create!(Proto.Admin.AdminMessageSchema, {
+    payloadVariant: { case: 'setModuleConfig', value: moduleConfig },
+  });
+  const data = create!(Proto.Mesh.DataSchema, {
+    portnum: PORTNUM_ADMIN,
+    payload: toBinary!(Proto.Admin.AdminMessageSchema, admin),
+    wantResponse: false,
+  });
+  const packet = create!(Proto.Mesh.MeshPacketSchema, {
+    to,
+    wantAck: false,
+    id: (Math.random() * 0xffffffff) >>> 0,
+    payloadVariant: { case: 'decoded', value: data },
+  });
+  const msg = create!(Proto.Mesh.ToRadioSchema, {
+    payloadVariant: { case: 'packet', value: packet },
+  });
+  return toBinary!(Proto.Mesh.ToRadioSchema, msg);
+}
+
+/**
+ * Send a SetChannel admin message. Writes a single channel slot (0–7) with the
+ * supplied settings + role. The radio applies the change immediately and emits
+ * a fresh Channel back; no reboot needed for channel edits.
+ *
+ * `to` MUST be the radio's own node number; see encodeToRadio_SetLoraConfig.
+ */
+export function encodeToRadio_SetChannel(to: number, ch: ChannelEdit): Uint8Array {
+  ensureReady();
+  const settings = create!(Proto.Channel.ChannelSettingsSchema, {
+    name: ch.name,
+    psk: new Uint8Array(ch.psk),
+    uplinkEnabled: ch.uplinkEnabled,
+    downlinkEnabled: ch.downlinkEnabled,
+  });
+  const channel = create!(Proto.Channel.ChannelSchema, {
+    index: ch.index,
+    role: ch.role,
+    settings,
+  });
+  const admin = create!(Proto.Admin.AdminMessageSchema, {
+    payloadVariant: { case: 'setChannel', value: channel },
+  });
+  const data = create!(Proto.Mesh.DataSchema, {
+    portnum: PORTNUM_ADMIN,
+    payload: toBinary!(Proto.Admin.AdminMessageSchema, admin),
+    wantResponse: false,
+  });
+  const packet = create!(Proto.Mesh.MeshPacketSchema, {
+    to,
+    wantAck: false,
+    id: (Math.random() * 0xffffffff) >>> 0,
+    payloadVariant: { case: 'decoded', value: data },
+  });
+  const msg = create!(Proto.Mesh.ToRadioSchema, {
+    payloadVariant: { case: 'packet', value: packet },
+  });
+  return toBinary!(Proto.Mesh.ToRadioSchema, msg);
+}
+
+/**
+ * Encode an entire ChannelSet (channels + LoRa config) into the standard
+ * meshtastic.org/e/# share URL. Mirrors the upstream "channel URL" format.
+ */
+export function encodeChannelSetUrl(channels: Array<{ name: string; psk: number[]; uplinkEnabled: boolean; downlinkEnabled: boolean }>, lora: LoRaConfigMsg): string {
+  ensureReady();
+  const settings = channels.map((c) =>
+    create!(Proto.Channel.ChannelSettingsSchema, {
+      name: c.name,
+      psk: new Uint8Array(c.psk),
+      uplinkEnabled: c.uplinkEnabled,
+      downlinkEnabled: c.downlinkEnabled,
+    }),
+  );
+  const loraConfig = create!(Proto.Config.Config_LoRaConfigSchema, {
+    usePreset: lora.usePreset,
+    modemPreset: lora.modemPreset,
+    bandwidth: lora.bandwidth,
+    spreadFactor: lora.spreadFactor,
+    codingRate: lora.codingRate,
+    region: lora.region,
+    hopLimit: lora.hopLimit,
+    txEnabled: lora.txEnabled,
+    txPower: lora.txPower,
+    channelNum: lora.channelNum,
+    overrideDutyCycle: false,
+    sx126xRxBoostedGain: lora.sx126xRxBoostedGain,
+    overrideFrequency: lora.overrideFrequency,
+  });
+  const channelSet = create!(Proto.AppOnly.ChannelSetSchema, {
+    settings,
+    loraConfig,
+  });
+  const bytes = toBinary!(Proto.AppOnly.ChannelSetSchema, channelSet);
+  // base64url (RFC 4648), no padding — same format Meshtastic uses.
+  const b64 = Buffer.from(bytes).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `https://meshtastic.org/e/#${b64}`;
+}
+
+/** Decode a meshtastic.org/e/# share URL into its constituent channels + LoRa config. */
+export function decodeChannelSetUrl(url: string): { channels: Array<{ name: string; psk: number[]; uplinkEnabled: boolean; downlinkEnabled: boolean }>; lora: LoRaConfigMsg | undefined } | null {
+  ensureReady();
+  const idx = url.indexOf('#');
+  if (idx === -1) return null;
+  let b64 = url.slice(idx + 1).trim();
+  // Strip any query string after the fragment.
+  b64 = b64.split('?')[0].split('&')[0];
+  // base64url → standard base64
+  b64 = b64.replace(/-/g, '+').replace(/_/g, '/');
+  // Re-pad
+  while (b64.length % 4) b64 += '=';
+  let bytes: Uint8Array;
+  try {
+    bytes = Uint8Array.from(Buffer.from(b64, 'base64'));
+  } catch {
+    return null;
+  }
+  let decoded: any;
+  try {
+    decoded = fromBinary!(Proto.AppOnly.ChannelSetSchema, bytes);
+  } catch {
+    return null;
+  }
+  const channels = (decoded.settings ?? []).map((s: any) => ({
+    name: s.name ?? '',
+    psk: s.psk ? Array.from(s.psk as Uint8Array) : [],
+    uplinkEnabled: !!s.uplinkEnabled,
+    downlinkEnabled: !!s.downlinkEnabled,
+  }));
+  const lora = decoded.loraConfig ? mapLoRaConfig(decoded.loraConfig) : undefined;
+  return { channels, lora };
+}
+
+export function encodeToRadio_SetOwner(to: number, args: { longName: string; shortName: string; }): Uint8Array {
   ensureReady();
   const user = create!(Proto.Mesh.UserSchema, {
     longName: args.longName,
@@ -798,7 +1040,7 @@ export function encodeToRadio_SetOwner(args: { longName: string; shortName: stri
     wantResponse: false,
   });
   const packet = create!(Proto.Mesh.MeshPacketSchema, {
-    to: 0, // self
+    to,
     wantAck: false,
     id: (Math.random() * 0xffffffff) >>> 0,
     payloadVariant: { case: 'decoded', value: data },

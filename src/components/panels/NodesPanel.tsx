@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import { useActiveConnId } from '../../hooks/MeshContext';
+import { channelHash, channelHashHex, pskFingerprint, pskLabel } from '../../channel-identity';
 
 const STALE_S = 24 * 3600;
 const AGING_S = 3600;
@@ -68,15 +70,27 @@ function fsplDb(distanceKm: number, freqMHz: number = 915): number {
   return 20 * Math.log10(distanceKm) + 20 * Math.log10(freqMHz) + 32.44;
 }
 
+type SourceFilter = 'all' | 'rf' | 'mqtt';
+
 export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[]; state: ConnectionState; onMessageNode?: (num: number) => void }) {
   const heard = nodes.filter((n) => n.lastHeard);
   const direct = heard.filter((n) => (n.hopsAway ?? 0) === 0).length;
   const relayed = heard.filter((n) => (n.hopsAway ?? 0) > 0).length;
   const staleCount = nodes.filter((n) => freshness(n.lastHeard) === 'stale').length;
+  const mqttCount = nodes.filter((n) => n.viaMqtt).length;
 
   const [selectedNum, setSelectedNum] = useState<number | null>(null);
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
+  const filteredNodes = nodes.filter((n) => {
+    if (sourceFilter === 'rf') return !n.viaMqtt;
+    if (sourceFilter === 'mqtt') return !!n.viaMqtt;
+    return true;
+  });
   const selected = selectedNum !== null ? nodes.find((n) => n.num === selectedNum) : null;
   const me = nodes.find((n) => n.num === state.myInfo?.myNodeNum);
+
+  const primary = state.channels?.find((c) => c.index === 0);
+  const primaryHash = primary ? channelHash(primary.name || '', primary.psk ?? []) : null;
 
   return (
     <div className="page">
@@ -85,15 +99,52 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
         Every node your radio has heard since it powered on. Click a row for detail. Direct = picked up off the air; Relayed = forwarded through another node.
       </p>
 
+      {state.status === 'ready' && primary && (
+        <div className="nodes-channel-id">
+          <span className="nodes-channel-id-label">LISTENING ON</span>
+          <span className="nodes-channel-id-name">{primary.name || '(default)'}</span>
+          <span className="nodes-channel-id-meta">{pskLabel(primary.pskLength)}</span>
+          {primaryHash !== null && (
+            <span className="nodes-channel-id-meta" title="8-bit channel hash = xor(name) ^ xor(psk). Two radios on the same logical channel compute the same hash; receivers use it to pick a decryption key.">
+              hash <strong style={{ color: 'var(--accent)', fontFamily: 'var(--mono)' }}>{channelHashHex(primaryHash)}</strong>
+            </span>
+          )}
+          <span className="nodes-channel-id-meta">
+            psk <span style={{ fontFamily: 'var(--mono)' }}>{pskFingerprint(primary.psk ?? [])}</span>
+          </span>
+          {state.loraConfig && (
+            <span className="nodes-channel-id-meta">
+              {state.loraConfig.regionName} · {state.loraConfig.usePreset ? state.loraConfig.modemPresetName : `SF${state.loraConfig.spreadFactor}/${(state.loraConfig.bandwidth / 1000).toFixed(0)}k`}
+            </span>
+          )}
+        </div>
+      )}
+
       <div className="layout-split-wide">
         <div>
           <div className="card">
-            <div style={{ display: 'flex', gap: 18, marginBottom: 14, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 18, marginBottom: 14, flexWrap: 'wrap', alignItems: 'baseline' }}>
               <Stat label="Total known" value={String(nodes.length)} />
               <Stat label="Heard" value={String(heard.length)} />
               <Stat label="Direct" value={String(direct)} />
               <Stat label="Relayed" value={String(relayed)} />
               <Stat label="Stale" value={String(staleCount)} />
+              {mqttCount > 0 && <Stat label="Via MQTT" value={String(mqttCount)} />}
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>source:</span>
+                {(['all', 'rf', 'mqtt'] as SourceFilter[]).map((f) => (
+                  <button
+                    key={f}
+                    className={'ghost' + (sourceFilter === f ? ' active' : '')}
+                    style={{ padding: '3px 9px', fontSize: 11, opacity: sourceFilter === f ? 1 : 0.7 }}
+                    onClick={() => setSourceFilter(f)}
+                    disabled={f === 'mqtt' && mqttCount === 0}
+                    title={f === 'mqtt' && mqttCount === 0 ? 'No MQTT-sourced nodes detected yet' : undefined}
+                  >
+                    {f === 'all' ? 'all' : f === 'rf' ? 'RF only' : 'MQTT only'}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {nodes.length === 0 && (
@@ -112,6 +163,7 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
                     <th>Long name</th>
                     <th>ID</th>
                     <th>Hardware</th>
+                    <th>Src</th>
                     <th>Hops</th>
                     <th>SNR</th>
                     <th>RSSI</th>
@@ -121,7 +173,7 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
                   </tr>
                 </thead>
                 <tbody>
-                  {nodes.map((n) => {
+                  {filteredNodes.map((n) => {
                     const fr = freshness(n.lastHeard);
                     const isMe = state.myInfo?.myNodeNum === n.num;
                     return (
@@ -143,6 +195,11 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
                         </td>
                         <td style={{ color: 'var(--text-faint)' }}>{nodeIdHex(n.num)}</td>
                         <td>{n.hwModelName}</td>
+                        <td>
+                          {n.viaMqtt
+                            ? <span className="src-chip src-mqtt" title="Heard via the radio's MQTT bridge — not on the local airwaves">MQTT</span>
+                            : <span className="src-chip src-rf" title="Heard over the air (RF) by the connected radio">RF</span>}
+                        </td>
                         <td>
                           <span className={`dot ${(n.hopsAway ?? 0) === 0 ? 'good' : 'warn'}`}></span>
                           {n.hopsAway ?? '—'}
@@ -232,6 +289,7 @@ function NodeDetail({
   onMessage?: (n: number) => void;
   onClose: () => void;
 }) {
+  const connId = useActiveConnId();
   const fr = freshness(node.lastHeard);
   const isMe = state.myInfo?.myNodeNum === node.num;
   const txPower = state.loraConfig?.txPower || 17; // sane default
@@ -261,6 +319,12 @@ function NodeDetail({
         {node.role !== undefined && <><dt>Role</dt><dd>{ROLE_NAMES[node.role] ?? node.role}</dd></>}
         {node.macaddr && <><dt>MAC</dt><dd>{node.macaddr}</dd></>}
         <dt>Last heard</dt><dd>{ago(node.lastHeard)}{node.lastHeard ? ` (${new Date(node.lastHeard * 1000).toLocaleString()})` : ''}</dd>
+        <dt>Source</dt>
+        <dd>
+          {node.viaMqtt
+            ? <><span className="src-chip src-mqtt">MQTT</span> <span style={{ color: 'var(--text-faint)', fontSize: 11.5 }}>via the radio's MQTT bridge — not on the airwaves</span></>
+            : <><span className="src-chip src-rf">RF</span> <span style={{ color: 'var(--text-faint)', fontSize: 11.5 }}>heard over the air by this radio</span></>}
+        </dd>
         <dt>Hops away</dt><dd>{node.hopsAway ?? '—'}</dd>
         <dt>RSSI</dt><dd>{node.rssi !== undefined && node.rssi !== 0 ? `${node.rssi} dBm` : '—'}</dd>
         <dt>SNR</dt><dd>{node.snr !== undefined ? `${node.snr.toFixed(1)} dB` : '—'}</dd>
@@ -289,8 +353,8 @@ function NodeDetail({
           </button>
           <button
             className="ghost"
-            onClick={() => window.mesh.sendTraceroute({ to: node.num })}
-            disabled={state.status !== 'ready'}
+            onClick={() => connId && window.mesh.sendTraceroute({ connId, to: node.num })}
+            disabled={state.status !== 'ready' || !connId}
             style={{ padding: '4px 10px', fontSize: 12 }}
           >
             Traceroute
