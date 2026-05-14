@@ -5,6 +5,7 @@ import {
   encodeToRadio_WantConfig,
   encodeToRadio_SendText,
   encodeToRadio_SendTraceroute,
+  encodeToRadio_BroadcastNodeInfo,
   encodeToRadio_Heartbeat,
   encodeToRadio_SetOwner,
   encodeToRadio_SetLoraConfig,
@@ -264,6 +265,35 @@ export class MeshtasticController extends EventEmitter {
   refresh(): void {
     console.log('[controller] manual refresh requested');
     this.requestConfig();
+  }
+
+  /**
+   * Broadcast our own NodeInfo over the air with wantResponse=true. Peers
+   * that hear us will update their nodeDB with our identity AND reply with
+   * their own NodeInfo, which is the closest thing Meshtastic offers to an
+   * "active scan." Returns false if we don't yet know who we are (handshake
+   * incomplete).
+   */
+  broadcastNodeInfo(): boolean {
+    const myNum = this.state.myInfo?.myNodeNum;
+    if (!myNum) {
+      console.warn('[controller] broadcastNodeInfo dropped — myNodeNum not yet known');
+      return false;
+    }
+    const me = this.nodes.get(myNum);
+    const packetId = (Math.random() * 0xffffffff) >>> 0;
+    console.log(`[controller] broadcasting NodeInfo (from=${myNum} packetId=${packetId})`);
+    this.enqueueToRadio(encodeToRadio_BroadcastNodeInfo({
+      fromNum: myNum,
+      id: me?.id,
+      longName: me?.longName,
+      shortName: me?.shortName,
+      hwModel: me?.hwModel,
+      macaddr: me?.macaddr,
+      role: me?.role,
+      packetId,
+    }));
+    return true;
   }
 
   /** When was the most recent nodeDB resync (manual or scheduled)? Wall-clock ms. */

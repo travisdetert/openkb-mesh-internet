@@ -665,6 +665,7 @@ function decodeAppPayload(pkt: MeshPacket, portnum: number, payload: Uint8Array)
 // ---------------------------------------------------------------------------
 
 const PORTNUM_TEXT_MESSAGE = 1;
+const PORTNUM_NODEINFO = 4;
 const PORTNUM_TRACEROUTE = 70;
 
 export function encodeToRadio_WantConfig(configId: number): Uint8Array {
@@ -702,6 +703,65 @@ export function encodeToRadio_SendText(args: {
     payloadVariant: { case: 'packet', value: packet },
   });
   return toBinary!(Proto.Mesh.ToRadioSchema, msg);
+}
+
+/**
+ * Broadcast our own NodeInfo (User proto) on the primary channel with
+ * wantResponse=true. Standard Meshtastic firmware updates its nodeDB with
+ * our identity AND replies with its own NodeInfo on receipt, so this is
+ * the closest thing to an "active mesh poll" the protocol exposes.
+ *
+ * `user` should be our own identity: id ("!xxxxxxxx"), long/short name,
+ * hw model id, and the 6-byte macaddr in colon-hex form
+ * (e.g. "aa:bb:cc:dd:ee:ff"). Empty fields are tolerated by the firmware.
+ */
+export function encodeToRadio_BroadcastNodeInfo(args: {
+  fromNum: number;
+  id?: string;
+  longName?: string;
+  shortName?: string;
+  hwModel?: number;
+  macaddr?: string;
+  role?: number;
+  packetId: number;
+}): Uint8Array {
+  ensureReady();
+  const user = create!(Proto.Mesh.UserSchema, {
+    id: args.id ?? '',
+    longName: args.longName ?? '',
+    shortName: args.shortName ?? '',
+    hwModel: args.hwModel ?? 0,
+    macaddr: hexToMacBytes(args.macaddr),
+    role: args.role ?? 0,
+  });
+  const data = create!(Proto.Mesh.DataSchema, {
+    portnum: PORTNUM_NODEINFO,
+    payload: toBinary!(Proto.Mesh.UserSchema, user),
+    wantResponse: true,
+  });
+  const packet = create!(Proto.Mesh.MeshPacketSchema, {
+    from: args.fromNum,
+    to: 0xffffffff, // broadcast
+    channel: 0,    // primary
+    wantAck: false,
+    id: args.packetId,
+    payloadVariant: { case: 'decoded', value: data },
+  });
+  const msg = create!(Proto.Mesh.ToRadioSchema, {
+    payloadVariant: { case: 'packet', value: packet },
+  });
+  return toBinary!(Proto.Mesh.ToRadioSchema, msg);
+}
+
+function hexToMacBytes(s: string | undefined): Uint8Array {
+  if (!s) return new Uint8Array(0);
+  const cleaned = s.replace(/[^0-9a-f]/gi, '');
+  if (cleaned.length < 12) return new Uint8Array(0);
+  const out = new Uint8Array(6);
+  for (let i = 0; i < 6; i++) {
+    out[i] = parseInt(cleaned.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
 }
 
 export function encodeToRadio_SendTraceroute(to: number, channel: number, packetId: number): Uint8Array {

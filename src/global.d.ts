@@ -357,6 +357,9 @@ declare global {
     refresh:            (connId: string) => Promise<void>;
     /** Timestamp (ms epoch) of the last completed nodeDB refresh, or 0. */
     lastRefreshAt:      (connId: string) => Promise<number>;
+    /** Broadcast our NodeInfo with wantResponse=true to nudge peers to reply
+     *  with theirs. Returns false if the radio hasn't finished its handshake. */
+    broadcastNodeInfo:  (connId: string) => Promise<boolean>;
     /** Auto-connect to confirmed Meshtastic USB devices as they appear. */
     getAutoConnect:     () => Promise<boolean>;
     setAutoConnect:     (enabled: boolean) => Promise<void>;

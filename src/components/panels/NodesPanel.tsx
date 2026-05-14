@@ -98,7 +98,10 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
             Every node your radio has heard since it powered on. Click a row for detail. Direct = picked up off the air; Relayed = forwarded through another node.
           </p>
         </div>
-        <NodeRefreshButton />
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+          <BroadcastNodeInfoButton state={state} />
+          <NodeRefreshButton />
+        </div>
       </div>
 
       <PanelChannelHeader state={state} label="LISTENING ON" />
@@ -435,6 +438,58 @@ function NodeRefreshButton() {
       <span style={{ fontSize: 10.5, color: 'var(--text-faint)', fontFamily: 'var(--mono)' }} key={nowTick}>
         last sync {sinceLabel}
       </span>
+    </div>
+  );
+}
+
+/**
+ * Broadcast our own NodeInfo on the primary channel with wantResponse=true.
+ * Meshtastic is push-only — peers' NodeInfo only arrives when *they* decide
+ * to broadcast (default 3 hr cadence). This is the closest thing to an
+ * "active scan": peers update their nodeDB with our identity AND reply with
+ * their own NodeInfo, so a previously-quiet neighbor often appears within a
+ * few seconds. Disabled until the radio finishes its handshake (we need
+ * myNodeNum to fill in the User payload).
+ */
+function BroadcastNodeInfoButton({ state }: { state: ConnectionState }) {
+  const connId = useActiveConnId();
+  const [busy, setBusy] = useState(false);
+  const [lastResult, setLastResult] = useState<{ at: number; ok: boolean } | null>(null);
+
+  if (!connId) return null;
+  const ready = state.status === 'ready' && !!state.myInfo?.myNodeNum;
+
+  const onClick = async () => {
+    if (!ready) return;
+    setBusy(true);
+    try {
+      const ok = await window.mesh.broadcastNodeInfo(connId);
+      setLastResult({ at: Date.now(), ok });
+    } finally {
+      setTimeout(() => setBusy(false), 1500);
+    }
+  };
+
+  const tooltip = !ready
+    ? 'Waiting for the radio to finish syncing — we need our own NodeInfo before we can broadcast it.'
+    : 'Send our NodeInfo to the mesh with wantResponse=true. Peers that hear it should reply with their own NodeInfo, surfacing nodes that haven\'t broadcast recently. Costs one air-time slot.';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, flexShrink: 0 }}>
+      <button
+        className="ghost"
+        onClick={onClick}
+        disabled={busy || !ready}
+        title={tooltip}
+        style={{ padding: '6px 14px', fontSize: 12, whiteSpace: 'nowrap' }}
+      >
+        {busy ? 'Broadcasting…' : '📣 Poke the mesh'}
+      </button>
+      {lastResult && (
+        <span style={{ fontSize: 10.5, color: lastResult.ok ? 'var(--text-faint)' : 'var(--warn)', fontFamily: 'var(--mono)' }}>
+          {lastResult.ok ? 'sent — listen for replies' : 'not ready yet'}
+        </span>
+      )}
     </div>
   );
 }

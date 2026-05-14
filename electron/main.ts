@@ -177,6 +177,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('mesh:getChannelSetUrl',   (_e, connId: string) => manager.getChannelSetUrl(connId));
   ipcMain.handle('mesh:applyChannelSetUrl', (_e, args: { connId: string; url: string }) => manager.applyChannelSetUrl(args.connId, args.url));
   ipcMain.handle('mesh:refresh',            (_e, connId: string) => manager.refresh(connId));
+  ipcMain.handle('mesh:broadcastNodeInfo',  (_e, connId: string) => manager.broadcastNodeInfo(connId));
   ipcMain.handle('mesh:lastRefreshAt',      (_e, connId: string) => manager.getLastRefreshAt(connId));
   ipcMain.handle('mesh:getAutoConnect',     () => manager.getAutoConnect());
   ipcMain.handle('mesh:setAutoConnect',     (_e, enabled: boolean) => manager.setAutoConnect(enabled));

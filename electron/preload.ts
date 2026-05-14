@@ -33,6 +33,7 @@ const api = {
   applyChannelSetUrl: (args: { connId: string; url: string }) => ipcRenderer.invoke('mesh:applyChannelSetUrl', args),
   refresh:            (connId: string) => ipcRenderer.invoke('mesh:refresh', connId),
   lastRefreshAt:      (connId: string) => ipcRenderer.invoke('mesh:lastRefreshAt', connId),
+  broadcastNodeInfo:  (connId: string) => ipcRenderer.invoke('mesh:broadcastNodeInfo', connId),
   getAutoConnect:     () => ipcRenderer.invoke('mesh:getAutoConnect'),
   setAutoConnect:     (enabled: boolean) => ipcRenderer.invoke('mesh:setAutoConnect', enabled),
   getPortStats:       (connId: string) => ipcRenderer.invoke('mesh:getPortStats', connId),

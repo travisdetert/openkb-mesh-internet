@@ -252,6 +252,11 @@ export class MeshManager extends EventEmitter {
   refresh(connId: string): void {
     this.controllers.get(connId)?.refresh();
   }
+  /** Broadcast our NodeInfo with wantResponse=true to nudge the mesh.
+   *  Returns false if the radio isn't ready (no myNodeNum yet). */
+  broadcastNodeInfo(connId: string): boolean {
+    return this.controllers.get(connId)?.broadcastNodeInfo() ?? false;
+  }
   /** Last successful refresh (ms epoch), or 0 if not yet synced. */
   getLastRefreshAt(connId: string): number {
     return this.controllers.get(connId)?.getLastRefreshAt() ?? 0;
