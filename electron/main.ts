@@ -115,6 +115,8 @@ app.whenReady().then(async () => {
   manager.on('trace-update', (p) => broadcast('mesh:traceUpdate', p));
   manager.on('connection-added', (p) => broadcast('mesh:connectionAdded', p));
   manager.on('connection-removed', (p) => broadcast('mesh:connectionRemoved', p));
+  manager.on('serial-raw', (p) => broadcast('mesh:serialRaw', p));
+  manager.on('serial-event', (p) => broadcast('mesh:serialEvent', p));
 
   // ── IPC handlers ──────────────────────────────────────────────────
   ipcMain.handle('mesh:listPorts', () => MeshManager.listPorts());
@@ -151,6 +153,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('mesh:setChannel',         (_e, args: { connId: string; channel: any }) => manager.setChannel(args.connId, args.channel));
   ipcMain.handle('mesh:getChannelSetUrl',   (_e, connId: string) => manager.getChannelSetUrl(connId));
   ipcMain.handle('mesh:applyChannelSetUrl', (_e, args: { connId: string; url: string }) => manager.applyChannelSetUrl(args.connId, args.url));
+  ipcMain.handle('mesh:refresh',            (_e, connId: string) => manager.refresh(connId));
+  ipcMain.handle('mesh:lastRefreshAt',      (_e, connId: string) => manager.getLastRefreshAt(connId));
+  ipcMain.handle('mesh:getAutoConnect',     () => manager.getAutoConnect());
+  ipcMain.handle('mesh:setAutoConnect',     (_e, enabled: boolean) => manager.setAutoConnect(enabled));
+  ipcMain.handle('mesh:getPortStats',       (_e, connId: string) => manager.getPortStats(connId));
+  ipcMain.handle('mesh:resetDevice',        (_e, args: { connId: string; profile: 'esp32' | 'esp32-bootloader' | 'nrf52-dfu' | 'rp2040-bootsel' }) => {
+    console.log(`[main] resetDevice → ${args.connId} (${args.profile})`);
+    return manager.resetDevice(args.connId, args.profile);
+  });
 
   // ── DB / shared (not per-connection) ──────────────────────────────
   ipcMain.handle('mesh:dbStats', () => db.getStats());

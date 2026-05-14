@@ -1586,12 +1586,10 @@ function ChatBubble({
   const isLastInGroup = !attachedBottom;
   return (
     <div className={'chat-row' + (isMe ? ' me' : '') + (attachedTop ? ' attached-top' : '') + (attachedBottom ? ' attached-bottom' : '')}>
-      {showHeader && (
-        <div className="chat-row-head">
-          <span className="chat-row-name" style={{ color }}>{sender}</span>
-          <span className="chat-row-time">{formatTime(m.rxTime)}</span>
-        </div>
-      )}
+      <div className={'chat-row-head' + (showHeader ? '' : ' chat-row-head-compact')}>
+        {showHeader && <span className="chat-row-name" style={{ color }}>{sender}</span>}
+        <span className="chat-row-time" title={new Date(m.rxTime * 1000).toLocaleString()}>{formatTime(m.rxTime)}</span>
+      </div>
       <div
         className={'chat-bubble' + (isMe ? ' me' : '') + (failed ? ' failed' : '') + (attachedTop ? ' attached-top' : '') + (attachedBottom ? ' attached-bottom' : '')}
         style={!isMe ? { borderLeft: `2px solid ${color}` } : undefined}

@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { listInstances } from '../../concepts/registry';
 import type { Instance } from '../../concepts/schema';
+import type { TabId } from '../TopNav';
+import { LearningModeBadge, LearningSeeAlso } from './LearningChrome';
 
 type Tab = 'chirp' | 'compare' | 'math';
 
-export function LoRaCssPanel({ state }: { state?: ConnectionState }) {
+export function LoRaCssPanel({ state, go }: { state?: ConnectionState; go: (id: TabId) => void }) {
   const cssModulations = useMemo(
     () => listInstances('modulation').filter((m) => m.scheme === 'CSS'),
     [],
@@ -28,6 +30,7 @@ export function LoRaCssPanel({ state }: { state?: ConnectionState }) {
       <p className="page-sub">
         LoRa doesn't transmit at one frequency — it sweeps. Each symbol is a chirp that ramps from low to high frequency across the channel. That sweep is what gives LoRa its absurd sensitivity and immunity to interference.
       </p>
+      <LearningModeBadge mode={activePresetName ? 'mixed' : 'offline'} />
 
       <div className="subnav">
         <button className={'subnav-btn' + (tab === 'chirp' ? ' active' : '')} onClick={() => setTab('chirp')}>Chirp</button>
@@ -41,6 +44,12 @@ export function LoRaCssPanel({ state }: { state?: ConnectionState }) {
       {tab === 'chirp' && <ChirpTab preset={preset} cssModulations={cssModulations} presetId={presetId} setPresetId={setPresetId} />}
       {tab === 'compare' && <CompareTab cssModulations={cssModulations} presetId={presetId} setPresetId={setPresetId} activePresetName={activePresetName} />}
       {tab === 'math' && <MathTab activePresetName={activePresetName} />}
+
+      <LearningSeeAlso go={go} links={[
+        { to: 'link-budget',  label: 'Link Budget',  blurb: 'See how SF/BW translate into receiver sensitivity dBm.' },
+        { to: 'mesh-routing', label: 'Mesh Routing', blurb: 'Why slower presets help small meshes but choke large ones.' },
+        { to: 'antennas',     label: 'Antennas',     blurb: 'The other half of the link equation.' },
+      ]} />
     </div>
   );
 }

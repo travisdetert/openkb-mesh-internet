@@ -131,25 +131,42 @@ export function SettingsPanel({ state }: { state: ConnectionState }) {
         </div>
       )}
 
-      <div className="subnav">
-        {([
+      {/* The radio reports its own capabilities in MyInfo. Use them to grey
+       *  out config sections that don't apply to this hardware (e.g. an nRF52
+       *  board with no WiFi shouldn't pretend it can join WiFi). */}
+      {(() => {
+        const hasWifi = state.myInfo?.hasWifi ?? true;
+        const hasBluetooth = state.myInfo?.hasBluetooth ?? true;
+        const sections: Array<{ id: ConfigSection; label: string; disabled?: boolean; reason?: string }> = [
           { id: 'lora',      label: 'LoRa' },
           { id: 'device',    label: 'Device' },
           { id: 'position',  label: 'Position' },
           { id: 'power',     label: 'Power' },
-          { id: 'bluetooth', label: 'Bluetooth' },
+          { id: 'bluetooth', label: 'Bluetooth', disabled: !hasBluetooth, reason: 'This radio does not have a Bluetooth radio (per MyInfo.has_bluetooth).' },
           { id: 'display',   label: 'Display' },
-          { id: 'network',   label: 'Network' },
-        ] as const).map((s) => (
-          <button
-            key={s.id}
-            className={'subnav-btn' + (section === s.id ? ' active' : '')}
-            onClick={() => setSection(s.id as ConfigSection)}
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
+          { id: 'network',   label: 'Network',   disabled: !hasWifi,      reason: 'This radio does not have a WiFi radio (per MyInfo.has_wifi). Network config has no effect.' },
+        ];
+        // If the current section just got disabled (e.g. user switched radios),
+        // bounce back to a safe one so we don't render a disabled-only screen.
+        if (section === 'bluetooth' && !hasBluetooth) setTimeout(() => setSection('lora'), 0);
+        if (section === 'network' && !hasWifi)        setTimeout(() => setSection('lora'), 0);
+        return (
+          <div className="subnav">
+            {sections.map((s) => (
+              <button
+                key={s.id}
+                className={'subnav-btn' + (section === s.id ? ' active' : '') + (s.disabled ? ' disabled' : '')}
+                onClick={() => !s.disabled && setSection(s.id)}
+                disabled={s.disabled}
+                title={s.reason}
+              >
+                {s.label}
+                {s.disabled && <span style={{ marginLeft: 4, opacity: 0.5 }}>·</span>}
+              </button>
+            ))}
+          </div>
+        );
+      })()}
 
       {section === 'lora'      && <LoRaEditor      state={state} isReady={isReady} />}
       {section === 'device'    && <DeviceEditor    state={state} isReady={isReady} />}

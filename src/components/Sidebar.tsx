@@ -2,7 +2,7 @@ import React from 'react';
 import { TABS, TabId } from './TopNav';
 import type { ConnectionView } from '../hooks/useMesh';
 
-type Tone = 'accent' | 'good' | 'warn' | 'dim';
+type Tone = 'accent' | 'good' | 'warn' | 'bad' | 'dim';
 interface Badge { text: string; tone?: Tone }
 
 interface Props {
@@ -25,10 +25,11 @@ interface Props {
   onSelectConnection: (id: string | null) => void;
 }
 
-// Items rendered with their own hero treatment outside any group. Home is the
-// brand link at the top, Connect is the live-status block, and Chat is the
-// big "go-here-first" button — it's what the app is for.
-const SPECIAL_APP_IDS = new Set<TabId>(['home', 'connect', 'chat']);
+// Items rendered with their own hero treatment outside any group:
+//   - home/connect/chat get bespoke treatments at the top of the sidebar
+//   - settings/mqtt/channels are reachable from inside the Connect tab
+//     (they configure the active device, so they belong with the device view).
+const SPECIAL_APP_IDS = new Set<TabId>(['home', 'connect', 'chat', 'settings', 'mqtt', 'channels']);
 const GROUP_ORDER: Array<{ key: 'app' | 'live' | 'troubleshoot' | 'learn' | 'kb'; label: string }> = [
   { key: 'app', label: 'Setup' },
   { key: 'live', label: 'Live' },
@@ -51,49 +52,75 @@ export function Sidebar({
 
   return (
     <aside className="sidebar">
-      <button
-        className={'sidebar-brand' + (active === 'home' ? ' active' : '')}
-        onClick={() => onSelect('home')}
-        title="Home"
-      >
-        OpenKB Mesh
-      </button>
-
-      <button
-        className={`sidebar-status ${pill.cls}` + (active === 'connect' ? ' active' : '')}
-        onClick={() => onSelect('connect')}
-        title="Connection setup"
-      >
-        <span className="status-dot-row">
+      <div className="sidebar-brand-row">
+        <button
+          className={'sidebar-brand' + (active === 'home' ? ' active' : '')}
+          onClick={() => onSelect('home')}
+          title="Home"
+        >
+          OpenKB Mesh
+        </button>
+        <button
+          className={'sidebar-brand-radios' + (active === 'connect' ? ' active' : '')}
+          onClick={() => onSelect('connect')}
+          title={connections.length === 0 ? 'No radios connected — open Connect' : `${connections.length} radio${connections.length === 1 ? '' : 's'} connected — open Connect`}
+        >
           <span key={pulseKey} className={`status-dot ${pill.cls}`} />
-          <span className="status-text">{pill.text}</span>
-        </span>
-        {isReady && myNode && (myNode.shortName || myNode.longName) && (
-          <span className="status-stats" style={{ color: 'var(--text)' }}>
-            {myNode.longName || myNode.shortName}
-            {myNode.hwModelName && <span style={{ color: 'var(--text-faint)' }}> · {myNode.hwModelName}</span>}
-          </span>
+          <span className="sidebar-brand-radios-count">{connections.length}</span>
+        </button>
+      </div>
+
+      {/* Per-radio list (or empty-state CTA). The radio count + status dot
+       *  lives in the brand header above to avoid duplicating it here. */}
+      <div className="sidebar-conn-card">
+        {connections.length === 0 ? (
+          <div className="sidebar-conn-empty">
+            <button className="sidebar-conn-empty-btn" onClick={() => onSelect('connect')}>
+              + Connect a radio
+            </button>
+          </div>
+        ) : (
+          <>
+            {connections.map((c) => {
+              const isActiveRow = c.connId === activeConnId;
+              const cMy = c.state.myInfo?.myNodeNum;
+              const cNode = cMy ? c.nodes.find((n) => n.num === cMy) : undefined;
+              const label = cNode?.shortName || cNode?.longName || c.portPath?.split('/').pop() || c.connId;
+              const dotCls = c.state.status === 'ready' ? 'ok' : c.state.status === 'disconnected' ? 'bad' : 'warn';
+              const cBatt = cNode?.batteryLevel;
+              const cBattColor = cBatt === undefined ? undefined : cBatt > 50 ? 'var(--good)' : cBatt > 20 ? 'var(--warn)' : 'var(--bad)';
+              const cNodes = c.nodes.length;
+              const subText = c.state.status === 'ready'
+                ? `${cNodes} nodes${cBatt !== undefined ? ' · 🔋 ' + cBatt + '%' : ''}`
+                : c.state.status === 'configuring' ? 'syncing nodeDB…'
+                : c.state.status === 'connecting'  ? 'opening port…'
+                : 'disconnected';
+              return (
+                <button
+                  key={c.connId}
+                  className={'sidebar-conn-row' + (isActiveRow ? ' active' : '')}
+                  onClick={() => { onSelectConnection(c.connId); onSelect('connect'); }}
+                  title="Make this the active radio and open its device view"
+                >
+                  <span className={`status-dot ${dotCls}`} />
+                  <div className="sidebar-conn-row-text">
+                    <div className="sidebar-conn-row-label">
+                      {label}
+                      {isActiveRow && <span className="sidebar-conn-row-active-pill">active</span>}
+                    </div>
+                    <div className="sidebar-conn-row-sub" style={cBatt !== undefined ? { color: cBattColor } : undefined}>
+                      {subText}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+            <button className="sidebar-conn-add" onClick={() => onSelect('connect')} title="Open the Connect panel to add or manage radios">
+              + Add / manage radios
+            </button>
+          </>
         )}
-        {isReady && (battery !== undefined || myNode?.voltage !== undefined) && (
-          <span className="status-stats">
-            {battery !== undefined && <span style={{ color: batteryColor }}>🔋 {battery}%</span>}
-            {myNode?.voltage !== undefined && <span style={{ marginLeft: 6, color: 'var(--text-faint)' }}>{myNode.voltage.toFixed(2)}V</span>}
-            {myNode?.channelUtilization !== undefined && <span style={{ marginLeft: 6, color: myNode.channelUtilization >= 25 ? 'var(--warn)' : 'var(--text-faint)' }}>· {myNode.channelUtilization.toFixed(0)}% ch</span>}
-          </span>
-        )}
-        {isReady && (
-          <span className="status-stats">
-            {nodesCount} nodes · {positionedCount} mapped · {packetsLast60s}/min
-            {unreadMessages > 0 && <> · <span style={{ color: 'var(--accent)' }}>{unreadMessages} new</span></>}
-          </span>
-        )}
-        {state.status === 'configuring' && (
-          <span className="status-stats">received {nodesCount} nodes so far…</span>
-        )}
-        {state.status === 'disconnected' && (
-          <span className="status-stats" style={{ color: 'var(--text-faint)' }}>click to connect</span>
-        )}
-      </button>
+      </div>
 
       <button
         key={chatPulseKey}
@@ -113,38 +140,6 @@ export function Sidebar({
               : 'all caught up'}
         </span>
       </button>
-
-      {connections.length > 1 && (
-        <div className="sidebar-conns">
-          <div className="sidebar-section-label" style={{ marginBottom: 4 }}>Radios</div>
-          {connections.map((c) => {
-            const isActive = c.connId === activeConnId;
-            const cMy = c.state.myInfo?.myNodeNum;
-            const cNode = cMy ? c.nodes.find((n) => n.num === cMy) : undefined;
-            const label = cNode?.shortName || cNode?.longName || c.portPath?.split('/').pop() || c.connId;
-            const sub = c.state.status === 'ready'
-              ? `${c.nodes.length} nodes`
-              : c.state.status === 'configuring'
-                ? 'syncing…'
-                : c.state.status === 'connecting'
-                  ? 'opening…'
-                  : 'disconnected';
-            const dotCls = c.state.status === 'ready' ? 'ok' : c.state.status === 'disconnected' ? 'bad' : 'warn';
-            return (
-              <button
-                key={c.connId}
-                className={'sidebar-conn' + (isActive ? ' active' : '')}
-                onClick={() => onSelectConnection(c.connId)}
-                title={c.portPath ?? c.connId}
-              >
-                <span className={`status-dot ${dotCls}`} />
-                <span className="sidebar-conn-label">{label}</span>
-                <span className="sidebar-conn-sub">{sub}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
 
       <nav className="sidebar-nav">
         {GROUP_ORDER.map(({ key, label }) => {

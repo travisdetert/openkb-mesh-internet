@@ -255,26 +255,28 @@ export function DeviceDatabasePanel({ nodes }: Props) {
               </p>
             </div>
           )}
-
-          {unknownInMesh.size > 0 && (
-            <div className="info-card" style={{ borderLeftColor: 'var(--warn)' }}>
-              <p style={{ margin: 0 }}><strong>Unknown models in your mesh.</strong></p>
-              <p style={{ margin: '6px 0 0', fontSize: 12.5 }}>
-                {Array.from(unknownInMesh.entries()).map(([hw, count], i) => (
-                  <span key={hw}>{i > 0 ? ', ' : ''}hwModel #{hw} ({count})</span>
-                ))}
-                {' '}— either newer hardware than this catalog covers, or zero (which means the radio never reported a hwModel for that node).
-              </p>
-            </div>
-          )}
-
-          <div className="info-card">
-            <p style={{ margin: 0 }}><strong>What this catalog is for.</strong></p>
-            <p style={{ margin: '6px 0 0', fontSize: 12.5 }}>
-              When you click "Message" or "Traceroute" to another node, knowing what hardware they're on tells you what to expect — a TBEAM with GPS will broadcast position; a Heltec WSL with no display might be a permanently-deployed router; an nRF52 board with 22 dBm probably has serious uptime.
-            </p>
-          </div>
         </div>
+      </div>
+
+      {/* Below the split-wide row so they don't share a column with the sticky
+       *  detail card — otherwise they slide up behind it on scroll. */}
+      {unknownInMesh.size > 0 && (
+        <div className="info-card" style={{ borderLeftColor: 'var(--warn)', marginTop: 14 }}>
+          <p style={{ margin: 0 }}><strong>Unknown models in your mesh.</strong></p>
+          <p style={{ margin: '6px 0 0', fontSize: 12.5 }}>
+            {Array.from(unknownInMesh.entries()).map(([hw, count], i) => (
+              <span key={hw}>{i > 0 ? ', ' : ''}hwModel #{hw} ({count})</span>
+            ))}
+            {' '}— either newer hardware than this catalog covers, or zero (which means the radio never reported a hwModel for that node).
+          </p>
+        </div>
+      )}
+
+      <div className="info-card" style={{ marginTop: 10 }}>
+        <p style={{ margin: 0 }}><strong>What this catalog is for.</strong></p>
+        <p style={{ margin: '6px 0 0', fontSize: 12.5 }}>
+          When you click "Message" or "Traceroute" to another node, knowing what hardware they're on tells you what to expect — a TBEAM with GPS will broadcast position; a Heltec WSL with no display might be a permanently-deployed router; an nRF52 board with 22 dBm probably has serious uptime.
+        </p>
       </div>
     </div>
   );
@@ -282,7 +284,7 @@ export function DeviceDatabasePanel({ nodes }: Props) {
 
 function DeviceDetail({ device, count }: { device: DeviceSpec; count: number }) {
   return (
-    <div className="card" style={{ position: 'sticky', top: 0 }}>
+    <div className="card" style={{ position: 'sticky', top: 0, background: 'var(--bg-elev)', zIndex: 1 }}>
       <div style={{ marginBottom: 10 }}>
         <h2 style={{ margin: 0, color: 'var(--accent)' }}>{device.name}</h2>
         <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontFamily: 'var(--mono)', marginTop: 2 }}>

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useMeshContext } from '../hooks/MeshContext';
+import type { TabId } from './TopNav';
 
 function pskDescription(pskLength: number): string {
   if (pskLength === 0) return 'open (no PSK)';
@@ -27,6 +28,8 @@ interface Props {
   readyAt: number | null;
   lastPacketAt: number | null;
   packetsLast60s: number;
+  /** Jump to another top-level panel — used by the "configure this radio" links. */
+  go: (id: TabId) => void;
 }
 
 const ROLE_NAMES: Record<number, string> = {
@@ -72,6 +75,7 @@ export function ConnectionWizard({
   readyAt,
   lastPacketAt,
   packetsLast60s,
+  go,
 }: Props) {
   const { connections, activeConnId, setActiveConnId } = useMeshContext();
   const [ports, setPorts] = useState<PortInfo[]>([]);
@@ -81,6 +85,14 @@ export function ConnectionWizard({
   const [attempted, setAttempted] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [autoConnect, setAutoConnectLocal] = useState<boolean>(() => {
+    try { const v = localStorage.getItem('openkb.autoConnect.v1'); return v === null ? true : v === '1'; } catch { return true; }
+  });
+  useEffect(() => {
+    // Push the current preference to main on mount and whenever it changes.
+    void window.mesh.setAutoConnect(autoConnect);
+    try { localStorage.setItem('openkb.autoConnect.v1', autoConnect ? '1' : '0'); } catch { /* ignore */ }
+  }, [autoConnect]);
   // Ports already in use by an active connection — hide from picker.
   const usedPorts = new Set(connections.map((c) => c.portPath).filter(Boolean) as string[]);
   const availablePorts = ports.filter((p) => !usedPorts.has(p.path));
@@ -144,9 +156,15 @@ export function ConnectionWizard({
 
   return (
     <div className="page">
-      <h1 className="page-title">
-        {connections.length <= 1 ? 'Connect to your node' : `Connected radios (${connections.length})`}
-      </h1>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+        <h1 className="page-title">
+          {connections.length <= 1 ? 'Connect to your node' : `Connected radios (${connections.length})`}
+        </h1>
+        <label className={'autoconnect-toggle' + (autoConnect ? ' on' : '')} title="When enabled, any USB device the app recognises as a Meshtastic board (confirmed VID/PID match) is opened automatically. Generic USB-serial devices are never auto-connected.">
+          <input type="checkbox" checked={autoConnect} onChange={(e) => setAutoConnectLocal(e.target.checked)} />
+          <span>Auto-connect to recognised radios</span>
+        </label>
+      </div>
 
       {/* Multi-radio picker — one chip per active connection plus an "add another" affordance */}
       {connections.length > 0 && (
@@ -290,6 +308,24 @@ export function ConnectionWizard({
         </div>
       )}
 
+      {/* Configure this radio — quick links into per-device panels. These
+       *  used to live in the sidebar but they're really about whatever
+       *  radio is currently active, so they belong with the device view. */}
+      {isConnected && (
+        <div className="conn-config-row">
+          <span className="conn-config-label">Configure this radio</span>
+          <button className="conn-config-btn" onClick={() => go('settings')} title="LoRa, device, position, power, network, display, Bluetooth">
+            <span className="conn-config-icon">⚙</span> Settings
+          </button>
+          <button className="conn-config-btn" onClick={() => go('channels')} title="Edit channels, PSKs, share via URL">
+            <span className="conn-config-icon">#</span> Channels
+          </button>
+          <button className="conn-config-btn" onClick={() => go('mqtt')} title="MQTT bridge, map reporting">
+            <span className="conn-config-icon">☁</span> MQTT
+          </button>
+        </div>
+      )}
+
       {/* Live sync progress — shown during connecting/configuring */}
       {(state.status === 'connecting' || state.status === 'configuring') && (
         <SyncProgress
@@ -371,7 +407,10 @@ export function ConnectionWizard({
 
           {state.loraConfig && (
             <div className="card">
-              <h3>LoRa config</h3>
+              <div className="card-head-row">
+                <h3 style={{ margin: 0 }}>LoRa config</h3>
+                <button className="card-edit-link" onClick={() => go('settings')}>Edit →</button>
+              </div>
               <dl className="kv kv-tight">
                 <dt>Region</dt><dd>{state.loraConfig.regionName}</dd>
                 <dt>Preset</dt>
@@ -400,7 +439,10 @@ export function ConnectionWizard({
 
           {state.channels && state.channels.length > 0 && (
             <div className="card">
-              <h3>Channels</h3>
+              <div className="card-head-row">
+                <h3 style={{ margin: 0 }}>Channels</h3>
+                <button className="card-edit-link" onClick={() => go('channels')}>Edit →</button>
+              </div>
               <table className="data" style={{ fontSize: 11.5 }}>
                 <thead>
                   <tr>

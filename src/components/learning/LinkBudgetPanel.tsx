@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { LORA_PRESETS, DEFAULT_PRESET } from '../../data/lora-presets';
 import { REGIONS } from '../../data/regions';
 import type { TabId } from '../TopNav';
+import { LearningModeBadge, LearningSeeAlso } from './LearningChrome';
 
 const REGION_MAP_FROM_RADIO: Record<string, string> = {
   US: 'US', EU_433: 'EU433', EU_868: 'EU868', CN: 'CN', JP: 'JP', ANZ: 'AU',
@@ -90,6 +91,7 @@ export function LinkBudgetPanel({ nodes, state, myNode, onMessageNode, go }: Pro
           </span>
         )}
       </p>
+      <LearningModeBadge mode={state.loraConfig ? 'live' : 'offline'} />
 
       <div className="subnav">
         <button className={'subnav-btn' + (tab === 'calc' ? ' active' : '')} onClick={() => setTab('calc')}>Calculator</button>
@@ -130,6 +132,14 @@ export function LinkBudgetPanel({ nodes, state, myNode, onMessageNode, go }: Pro
           feedlineLoss={feedlineLoss} obstructionLoss={obstructionLoss} fade={fade}
           currentPresetId={presetId}
         />
+      )}
+
+      {go && (
+        <LearningSeeAlso go={go} links={[
+          { to: 'rssi-distance', label: 'RSSI vs. Distance', blurb: 'Compare the budget to your measured RSSI at each distance.' },
+          { to: 'coverage',      label: 'Coverage',          blurb: 'Project the dB ledger onto a real heatmap.' },
+          { to: 'antennas',      label: 'Antennas',          blurb: 'The biggest lever in any link-budget rewrite.' },
+        ]} />
       )}
     </div>
   );

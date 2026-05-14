@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { ANTENNAS, CONNECTOR_LABELS, POLARIZATION_LABELS } from '../../data/antennas';
 import { REGIONS } from '../../data/regions';
+import type { TabId } from '../TopNav';
+import { LearningModeBadge, LearningSeeAlso } from './LearningChrome';
 
 type Tab = 'compare' | 'patterns' | 'polarization' | 'length' | 'recommend';
 
@@ -11,7 +13,7 @@ function bandsLabel(bands: string[]): string {
     .join(', ');
 }
 
-export function AntennaPanel() {
+export function AntennaPanel({ go }: { go: (id: TabId) => void }) {
   const [tab, setTab] = useState<Tab>('compare');
 
   return (
@@ -20,6 +22,7 @@ export function AntennaPanel() {
       <p className="page-sub">
         The stock antenna shipped with your radio is roughly <code>$0.50</code> of plastic and copper. Upgrading is the single highest-return change you can make to your range.
       </p>
+      <LearningModeBadge mode="offline" />
 
       <div className="subnav">
         <button className={'subnav-btn' + (tab === 'compare' ? ' active' : '')} onClick={() => setTab('compare')}>Compare</button>
@@ -34,6 +37,12 @@ export function AntennaPanel() {
       {tab === 'polarization' && <PolarizationTab />}
       {tab === 'length' && <LengthTab />}
       {tab === 'recommend' && <RecommendTab />}
+
+      <LearningSeeAlso go={go} links={[
+        { to: 'link-budget',   label: 'Link Budget',         blurb: 'See how an antenna swap moves the dB ledger.' },
+        { to: 'rssi-distance', label: 'RSSI vs. Distance',   blurb: 'Compare your measured RSSI before/after an upgrade.' },
+        { to: 'coverage',      label: 'Coverage',            blurb: 'Translate dB into geographic reach.' },
+      ]} />
     </div>
   );
 }

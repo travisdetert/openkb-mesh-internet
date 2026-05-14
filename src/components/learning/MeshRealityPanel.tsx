@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { TabId } from '../TopNav';
+import { LearningModeBadge, LearningSeeAlso } from './LearningChrome';
 
 type Tab = 'reach' | 'cross' | 'loss' | 'mine';
 
@@ -92,6 +93,7 @@ export function MeshRealityPanel({ nodes = [], myNode, state, go }: Props = {}) 
       <p className="page-sub">
         Honest answers backed by physics — and where applicable, by your own mesh data.
       </p>
+      <LearningModeBadge mode={nodes.length > 0 ? 'mixed' : 'offline'} />
 
       <div className="subnav">
         <button className={'subnav-btn' + (tab === 'reach' ? ' active' : '')} onClick={() => setTab('reach')}>7-hop reach</button>
@@ -260,6 +262,14 @@ export function MeshRealityPanel({ nodes = [], myNode, state, go }: Props = {}) 
 
       {tab === 'mine' && (
         <YourAreaTab nodes={nodes} myNode={myNode} state={state} go={go} />
+      )}
+
+      {go && (
+        <LearningSeeAlso go={go} links={[
+          { to: 'expectations', label: 'Expectations', blurb: 'Concrete numbers for typical deployments.' },
+          { to: 'coverage',     label: 'Coverage',     blurb: 'See where your radio actually reaches today.' },
+          { to: 'map',          label: 'Map',          blurb: 'Visualise the reach against the geography.' },
+        ]} />
       )}
     </div>
   );

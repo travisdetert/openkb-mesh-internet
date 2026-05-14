@@ -31,6 +31,13 @@ const api = {
   setChannel:         (args: { connId: string; channel: unknown }) => ipcRenderer.invoke('mesh:setChannel', args),
   getChannelSetUrl:   (connId: string) => ipcRenderer.invoke('mesh:getChannelSetUrl', connId),
   applyChannelSetUrl: (args: { connId: string; url: string }) => ipcRenderer.invoke('mesh:applyChannelSetUrl', args),
+  refresh:            (connId: string) => ipcRenderer.invoke('mesh:refresh', connId),
+  lastRefreshAt:      (connId: string) => ipcRenderer.invoke('mesh:lastRefreshAt', connId),
+  getAutoConnect:     () => ipcRenderer.invoke('mesh:getAutoConnect'),
+  setAutoConnect:     (enabled: boolean) => ipcRenderer.invoke('mesh:setAutoConnect', enabled),
+  getPortStats:       (connId: string) => ipcRenderer.invoke('mesh:getPortStats', connId),
+  resetDevice:        (args: { connId: string; profile: 'esp32' | 'esp32-bootloader' | 'nrf52-dfu' | 'rp2040-bootsel' }) =>
+    ipcRenderer.invoke('mesh:resetDevice', args),
 
   // ── shared / DB ─────────────────────────────────────────────────────
   dbStats: () => ipcRenderer.invoke('mesh:dbStats'),
@@ -88,6 +95,16 @@ const api = {
     const fn = (_e: unknown, p: { connId: string; portPath: string }) => cb(p);
     ipcRenderer.on('mesh:connectionAdded', fn);
     return () => ipcRenderer.removeListener('mesh:connectionAdded', fn);
+  },
+  onSerialRaw: (cb: (p: { connId: string; direction: 'rx' | 'tx'; at: number; bytes: string }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; direction: 'rx' | 'tx'; at: number; bytes: string }) => cb(p);
+    ipcRenderer.on('mesh:serialRaw', fn);
+    return () => ipcRenderer.removeListener('mesh:serialRaw', fn);
+  },
+  onSerialEvent: (cb: (p: { connId: string; event: { at: number; kind: string; detail?: string } }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; event: { at: number; kind: string; detail?: string } }) => cb(p);
+    ipcRenderer.on('mesh:serialEvent', fn);
+    return () => ipcRenderer.removeListener('mesh:serialEvent', fn);
   },
   onConnectionRemoved: (cb: (p: { connId: string }) => void) => {
     const fn = (_e: unknown, p: { connId: string }) => cb(p);

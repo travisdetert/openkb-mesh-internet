@@ -353,6 +353,17 @@ declare global {
     setChannel:         (args: { connId: string; channel: ChannelEdit }) => Promise<void>;
     getChannelSetUrl:   (connId: string) => Promise<string | null>;
     applyChannelSetUrl: (args: { connId: string; url: string }) => Promise<boolean>;
+    /** Ask the radio to redump its nodeDB now (in addition to the 15-min auto-refresh). */
+    refresh:            (connId: string) => Promise<void>;
+    /** Timestamp (ms epoch) of the last completed nodeDB refresh, or 0. */
+    lastRefreshAt:      (connId: string) => Promise<number>;
+    /** Auto-connect to confirmed Meshtastic USB devices as they appear. */
+    getAutoConnect:     () => Promise<boolean>;
+    setAutoConnect:     (enabled: boolean) => Promise<void>;
+    /** Serial port counters for the Device Lab panel. */
+    getPortStats:       (connId: string) => Promise<PortStats | null>;
+    /** Drive USB-serial control lines to reset / enter bootloader. */
+    resetDevice:        (args: { connId: string; profile: ResetProfile }) => Promise<void>;
 
     dbStats: () => Promise<DbStats>;
     pathLossSamples: (args?: { connId?: string; sinceMs?: number }) => Promise<PathLossSample[]>;
@@ -370,6 +381,26 @@ declare global {
     onTraceUpdate: (cb: (p: { connId: string; trace: PacketTrace }) => void) => () => void;
     onConnectionAdded: (cb: (p: { connId: string; portPath: string }) => void) => () => void;
     onConnectionRemoved: (cb: (p: { connId: string }) => void) => () => void;
+    onSerialRaw: (cb: (p: { connId: string; direction: 'rx' | 'tx'; at: number; bytes: string }) => void) => () => void;
+    onSerialEvent: (cb: (p: { connId: string; event: SerialEvent }) => void) => () => void;
+  }
+
+  type ResetProfile = 'esp32' | 'esp32-bootloader' | 'nrf52-dfu' | 'rp2040-bootsel';
+  interface PortStats {
+    openedAt: number | null;
+    lastDataAt: number | null;
+    bytesIn: number;
+    bytesOut: number;
+    framesIn: number;
+    framesOut: number;
+    framesCorrupt: number;
+    errorCount: number;
+    reconnectCount: number;
+  }
+  interface SerialEvent {
+    at: number;
+    kind: 'open' | 'close' | 'reconnect-attempt' | 'reconnect-ok' | 'error' | 'reset' | 'frame-corrupt' | 'note';
+    detail?: string;
   }
 
   interface Window {

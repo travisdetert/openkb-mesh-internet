@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { LORA_PRESETS } from '../../data/lora-presets';
+import type { TabId } from '../TopNav';
+import { LearningModeBadge, LearningSeeAlso } from './LearningChrome';
 
 interface Props {
   nodes: NodeRecord[];
   state: ConnectionState;
   myNode?: NodeRecord;
   onMessageNode?: (n: number) => void;
+  go: (id: TabId) => void;
 }
 
 const REGION_FREQ_MHZ: Record<string, number> = {
@@ -97,7 +100,7 @@ function latToMercY(lat: number, z: number): number {
 }
 function clampZoom(z: number): number { return Math.max(1, Math.min(17, Math.round(z))); }
 
-export function CoveragePanel({ nodes, state, myNode, onMessageNode }: Props) {
+export function CoveragePanel({ nodes, state, myNode, onMessageNode, go }: Props) {
   const [tab, setTab] = useState<Tab>('pathloss');
   const [windowId, setWindowId] = useState('7d');
   const [hopsFilter, setHopsFilter] = useState<'direct' | 'all'>('direct');
@@ -136,6 +139,7 @@ export function CoveragePanel({ nodes, state, myNode, onMessageNode }: Props) {
       <p className="page-sub">
         Every <code>(distance, RSSI)</code> sample your radio has accumulated, fitted to a path-loss model — and projected back onto the actual geography. {state.loraConfig && <span style={{ color: 'var(--good)' }}>· {freqMHz} MHz</span>}
       </p>
+      <LearningModeBadge mode="live" />
 
       <div className="subnav">
         <button className={'subnav-btn' + (tab === 'pathloss' ? ' active' : '')} onClick={() => setTab('pathloss')}>
@@ -179,6 +183,12 @@ export function CoveragePanel({ nodes, state, myNode, onMessageNode }: Props) {
           txPower={state.loraConfig?.txPower || 17}
         />
       )}
+
+      <LearningSeeAlso go={go} links={[
+        { to: 'rssi-distance', label: 'RSSI vs. Distance', blurb: 'See the raw samples that feed this fit.' },
+        { to: 'link-budget',   label: 'Link Budget',       blurb: 'Walk through the dB math behind the path-loss curve.' },
+        { to: 'map',           label: 'Map',               blurb: 'See the heatmap overlaid on real positions.' },
+      ]} />
     </div>
   );
 }

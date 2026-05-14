@@ -13,6 +13,7 @@ export type TabId =
   | 'traceroute'
   | 'delivery'
   | 'sniffer'
+  | 'discovery'
   | 'link-budget'
   | 'rssi-distance'
   | 'coverage'
@@ -25,6 +26,8 @@ export type TabId =
   | 'radio-compare'
   | 'link-test'
   | 'health'
+  | 'device-lab'
+  | 'firmware'
   | 'events'
   | 'concepts'
   | 'devices';
@@ -46,11 +49,14 @@ export const TABS: Tab[] = [
   { id: 'chat',         label: 'Chat',           group: 'live' },
   { id: 'telemetry',    label: 'Telemetry',      group: 'live' },
   { id: 'health',       label: 'Mesh Health',    group: 'troubleshoot' },
+  { id: 'device-lab',   label: 'Device Lab',     group: 'troubleshoot' },
+  { id: 'firmware',     label: 'Firmware',       group: 'troubleshoot' },
   { id: 'radio-compare', label: 'Compare Radios', group: 'troubleshoot' },
   { id: 'link-test',    label: 'Link Test',      group: 'troubleshoot' },
   { id: 'delivery',     label: 'Delivery',       group: 'troubleshoot' },
   { id: 'traceroute',   label: 'Traceroute',     group: 'troubleshoot' },
   { id: 'sniffer',      label: 'Packet Sniffer', group: 'troubleshoot' },
+  { id: 'discovery',     label: 'Node Discovery',  group: 'learn' },
   { id: 'link-budget',   label: 'Link Budget',     group: 'learn' },
   { id: 'rssi-distance', label: 'RSSI vs Distance', group: 'learn' },
   { id: 'coverage',      label: 'Coverage',         group: 'learn' },

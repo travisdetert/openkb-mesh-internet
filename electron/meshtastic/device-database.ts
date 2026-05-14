@@ -102,6 +102,7 @@ export const PORT_PATTERNS: Record<string, RegExp[]> = {
 // gracefully to "Unknown HW (id=N)" so newer firmware doesn't read as "Unset".
 export const HW_MODELS: Record<number, string> = {
   0: 'Unset',
+  // Original entries (firmware HardwareModel enum, IDs known-good)
   1: 'TLORA_V2', 2: 'TLORA_V1', 3: 'TLORA_V2_1_1P6', 4: 'TBEAM',
   5: 'HELTEC_V2_0', 6: 'TBEAM_V0P7', 7: 'T_ECHO', 8: 'TLORA_V1_1P3',
   9: 'RAK4631', 10: 'HELTEC_V2_1', 11: 'HELTEC_V1', 25: 'RIPPLE',
@@ -124,6 +125,20 @@ export const HW_MODELS: Record<number, string> = {
   83: 'HELTEC_MESH_NODE_T114', 84: 'SENSECAP_INDICATOR',
   85: 'TRACKER_T1000_E', 86: 'RAK3172', 87: 'WIO_E5',
   88: 'RADIOMASTER_900_BANDIT',
+  // Newer additions (IDs 89+). Names from Meshtastic firmware HardwareModel
+  // enum; double-check upstream if you see a wrong label for a specific node.
+  89: 'ME25LS01_4Y10TD', 90: 'RP2040_FEATHER_RFM95', 91: 'M5STACK_COREBASIC',
+  92: 'M5STACK_CORE2', 93: 'RPI_PICO2', 94: 'M5STACK_CORES3',
+  95: 'SEEED_XIAO_S3', 96: 'MS24SF1', 97: 'TLORA_C6', 98: 'WISMESH_TAP',
+  99: 'ROUTASTIC', 100: 'MESH_TAB', 101: 'MESHLINK', 102: 'XIAO_NRF52_KIT',
+  103: 'THINKNODE_M1', 104: 'THINKNODE_M2', 105: 'T_ETH_ELITE',
+  106: 'HELTEC_SENSOR_HUB',
+  // Common newer boards (assignments per recent firmware)
+  107: 'HELTEC_MESH_POCKET', 108: 'SEEED_SOLAR_NODE',
+  109: 'NOMADSTAR_METEOR_PRO', 110: 'CROWPANEL', 111: 'LINK_32',
+  112: 'SEEED_WIO_TRACKER_L1', 113: 'SEEED_WIO_TRACKER_L1_EINK',
+  114: 'QWANTZ_TINY_ARMS', 115: 'T_DECK_PRO', 116: 'T_LORA_PAGER',
+  255: 'PRIVATE_HW',
 };
 
 /** Recommended devices for new users */

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { TabId } from '../TopNav';
 import { LORA_PRESETS } from '../../data/lora-presets';
+import { LearningModeBadge, LearningSeeAlso } from './LearningChrome';
 
 type Tab = 'demo' | 'mine' | 'math';
 
@@ -21,6 +22,7 @@ export function MeshRoutingPanel({ nodes, links, state, myNode, go }: Props) {
       <p className="page-sub">
         Meshtastic uses <strong>managed flood routing</strong>: every node retransmits messages it hasn't seen before, with random backoff and a hop counter. Simple, robust, ugly at scale.
       </p>
+      <LearningModeBadge mode={nodes.length > 0 ? 'mixed' : 'offline'} />
 
       <div className="subnav">
         <button className={'subnav-btn' + (tab === 'demo' ? ' active' : '')} onClick={() => setTab('demo')}>Demo</button>
@@ -33,6 +35,14 @@ export function MeshRoutingPanel({ nodes, links, state, myNode, go }: Props) {
       {tab === 'demo' && <DemoTab nodes={nodes} go={go} />}
       {tab === 'mine' && <YourMeshTab nodes={nodes} links={links} myNode={myNode} state={state} go={go} />}
       {tab === 'math' && <MathTab state={state} nodes={nodes} />}
+
+      {go && (
+        <LearningSeeAlso go={go} links={[
+          { to: 'reality',    label: 'Reality Check', blurb: 'Honest answers about how far flooding actually scales.' },
+          { to: 'map',        label: 'Map',           blurb: 'See which of your neighbours are direct vs. relayed.' },
+          { to: 'traceroute', label: 'Traceroute',    blurb: 'Watch a specific packet take its hops in real time.' },
+        ]} />
+      )}
     </div>
   );
 }

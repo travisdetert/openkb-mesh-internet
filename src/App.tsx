@@ -1,5 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { TabId } from './components/TopNav';
+import { TabId, TABS } from './components/TopNav';
+
+const LAST_TAB_KEY = 'openkb.lastTab.v1';
+
+function loadLastTab(): TabId | null {
+  try {
+    const raw = localStorage.getItem(LAST_TAB_KEY);
+    if (!raw) return null;
+    // Validate against the TABS array — localStorage corruption shouldn't
+    // crash the app into an unrenderable state.
+    if (TABS.some((t) => t.id === raw)) return raw as TabId;
+    return null;
+  } catch { return null; }
+}
 import { Sidebar } from './components/Sidebar';
 import { HomePage } from './components/HomePage';
 import { ConnectionWizard } from './components/ConnectionWizard';
@@ -16,6 +29,9 @@ import { PacketSnifferPanel } from './components/panels/PacketSnifferPanel';
 import { RadioComparePanel } from './components/panels/RadioComparePanel';
 import { MeshHealthPanel } from './components/panels/MeshHealthPanel';
 import { LinkTestPanel } from './components/panels/LinkTestPanel';
+import { DeviceLabPanel } from './components/panels/DeviceLabPanel';
+import { FirmwarePanel } from './components/panels/FirmwarePanel';
+import { DiscoveryPanel } from './components/learning/DiscoveryPanel';
 import { LinkBudgetPanel } from './components/learning/LinkBudgetPanel';
 import { SignalDistancePanel } from './components/learning/SignalDistancePanel';
 import { CoveragePanel } from './components/learning/CoveragePanel';
@@ -31,20 +47,47 @@ import { EventFeedPanel } from './components/EventFeedPanel';
 import { useMesh } from './hooks/useMesh';
 import { MeshContext } from './hooks/MeshContext';
 import { Onboarding, hasCompletedOnboarding } from './components/Onboarding';
+import {
+  summarizeCompareRadios,
+  summarizeMeshHealth,
+  summarizeLinkTest,
+  summarizeDelivery,
+} from './lib/troubleshoot-summary';
 
 export type ChatTarget =
   | { kind: 'channel'; index: number }
   | { kind: 'dm'; nodeNum: number };
 
 export function App() {
-  // Chat is the app's reason for being — open it by default. Users who want
-  // setup land on Connect once via the prominent status block in the sidebar.
-  const [tab, setTab] = useState<TabId>('chat');
+  // Land on Home on every cold start — a radio is never connected at app
+  // launch, so jumping to Chat would just show an empty "connect first" state.
+  // Once a connection becomes ready, we'll restore the last visited tab
+  // (saved in localStorage on every change) provided the user is still on Home.
+  const [tab, setTab] = useState<TabId>('home');
   const [chatTarget, setChatTarget] = useState<ChatTarget | null>(null);
   const mesh = useMesh();
   // Auto-show the onboarding tour for first-time users. Manual trigger lives
   // on the Home page so users can revisit any time.
   const [showOnboarding, setShowOnboarding] = useState(() => !hasCompletedOnboarding());
+
+  // Persist tab changes so we can restore them once a radio reconnects.
+  useEffect(() => {
+    try { localStorage.setItem(LAST_TAB_KEY, tab); } catch { /* ignore */ }
+  }, [tab]);
+
+  // First-ready-of-the-session restore. We only fire this once per launch
+  // and only if the user hasn't already navigated away from Home — manual
+  // navigation always wins over auto-restore.
+  const autoRestoredRef = useRef(false);
+  useEffect(() => {
+    if (autoRestoredRef.current) return;
+    if (mesh.state.status !== 'ready') return;
+    autoRestoredRef.current = true;
+    if (tab !== 'home') return; // user already chose where to go
+    const saved = loadLastTab();
+    if (saved && saved !== 'home') setTab(saved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mesh.state.status]);
 
   // Per-panel "last viewed" timestamps drive unread badges.
   const [lastViewed, setLastViewed] = useState<Partial<Record<TabId, number>>>({});
@@ -86,12 +129,59 @@ export function App() {
   }, [unreadMessages]);
   const pendingTraces = useMemo(() => mesh.traceroutes.filter((t) => !t.response).length, [mesh.traceroutes]);
 
-  const sidebarBadges: Partial<Record<TabId, { text: string; tone?: 'accent' | 'good' | 'warn' | 'dim' }>> = {
+  // Active connection view, needed by the troubleshoot summaries that look at
+  // per-radio state (traces, lastPacketAt). `mesh.traces` etc. are already a
+  // projection of the active view, but the summarizer accepts the whole view.
+  const activeView = useMemo(
+    () => mesh.connections.find((c) => c.connId === mesh.activeConnId) ?? null,
+    [mesh.connections, mesh.activeConnId],
+  );
+
+  const compareBadge = useMemo(() => summarizeCompareRadios(mesh.connections), [mesh.connections]);
+  const healthBadge = useMemo(() => summarizeMeshHealth(activeView), [activeView]);
+  const linkTestBadge = useMemo(() => summarizeLinkTest(mesh.connections), [mesh.connections]);
+  const deliveryBadge = useMemo(() => summarizeDelivery(activeView), [activeView]);
+
+  // ── Data-flow bubbles for the rest of the panels ─────────────────────
+  // Telemetry: most recent channel utilization (if the radio is reporting it).
+  const chanUtil = myNode?.channelUtilization;
+  // Discovery / mesh routing: how many distinct neighbours the radio knows,
+  // and how many are 0-hop direct vs. relayed.
+  const directNeighbours = useMemo(
+    () => mesh.nodes.filter((n) => n.num !== myNum && (n.hopsAway ?? 99) === 0 && n.lastHeard).length,
+    [mesh.nodes, myNum],
+  );
+  // RSSI/Coverage: positioned nodes with a real RSSI sample (what the
+  // scatter and path-loss-fit panels actually plot).
+  const rssiSamples = useMemo(
+    () => mesh.nodes.filter((n) =>
+      n.lat !== undefined && n.lon !== undefined && (n.lat !== 0 || n.lon !== 0)
+      && n.rssi !== undefined && n.rssi !== 0
+    ).length,
+    [mesh.nodes],
+  );
+
+  const sidebarBadges: Partial<Record<TabId, { text: string; tone?: 'accent' | 'good' | 'warn' | 'bad' | 'dim' }>> = {
     nodes: mesh.nodes.length > 0 ? { text: String(mesh.nodes.length), tone: 'dim' } : undefined,
     chat: unreadMessages > 0 ? { text: String(unreadMessages), tone: 'accent' } : undefined,
     map: positioned > 0 ? { text: String(positioned), tone: 'dim' } : undefined,
+    telemetry: chanUtil !== undefined
+      ? { text: `${chanUtil.toFixed(0)}%`, tone: chanUtil >= 25 ? 'warn' : chanUtil >= 10 ? 'good' : 'dim' }
+      : undefined,
     sniffer: mesh.packetsLast60s > 0 ? { text: `${mesh.packetsLast60s}/m`, tone: 'good' } : undefined,
     traceroute: pendingTraces > 0 ? { text: String(pendingTraces), tone: 'warn' } : undefined,
+    'radio-compare': compareBadge,
+    health: healthBadge,
+    'link-test': linkTestBadge,
+    delivery: deliveryBadge,
+    // Live-driven learn panels — show counts that signal "this panel has
+    // your data" so users know the offline reference content isn't all there is.
+    discovery: mesh.nodes.length > 0 ? { text: String(mesh.nodes.length), tone: 'good' } : undefined,
+    'rssi-distance': rssiSamples > 0 ? { text: String(rssiSamples), tone: 'good' } : undefined,
+    coverage: rssiSamples > 0 ? { text: String(rssiSamples), tone: 'good' } : undefined,
+    'mesh-routing': directNeighbours > 0 ? { text: `${directNeighbours} direct`, tone: 'good' } : undefined,
+    events: mesh.recentPackets.length > 0 ? { text: String(mesh.recentPackets.length), tone: 'dim' } : undefined,
+    devices: mesh.nodes.length > 0 ? { text: String(mesh.nodes.length), tone: 'dim' } : undefined,
   };
 
   const openDm = (nodeNum: number) => {
@@ -136,11 +226,20 @@ export function App() {
         <HomePage
           go={setTab}
           state={mesh.state}
+          nodes={mesh.nodes}
           nodesCount={mesh.nodes.length}
           positionedCount={positioned}
           lastPacketAt={mesh.lastPacketAt}
           packetsLast60s={mesh.packetsLast60s}
+          messages={mesh.messages}
+          recentPackets={mesh.recentPackets}
+          connections={mesh.connections}
+          activeConnId={mesh.activeConnId}
+          setActiveConnId={mesh.setActiveConnId}
+          unreadMessages={unreadMessages}
+          pendingTraces={pendingTraces}
           onShowTour={() => setShowOnboarding(true)}
+          openDm={openDm}
         />
       )}
       {tab === 'settings' && <SettingsPanel state={mesh.state} />}
@@ -156,6 +255,7 @@ export function App() {
           readyAt={mesh.readyAt}
           lastPacketAt={mesh.lastPacketAt}
           packetsLast60s={mesh.packetsLast60s}
+          go={setTab}
         />
       )}
       {tab === 'nodes' && <NodesPanel nodes={mesh.nodes} state={mesh.state} onMessageNode={openDm} />}
@@ -167,6 +267,8 @@ export function App() {
       {tab === 'sniffer' && <PacketSnifferPanel packets={mesh.recentPackets} packetCount={mesh.packetCount} nodes={mesh.nodes} state={mesh.state} onMessageNode={openDm} />}
       {tab === 'radio-compare' && <RadioComparePanel />}
       {tab === 'link-test' && <LinkTestPanel />}
+      {tab === 'device-lab' && <DeviceLabPanel />}
+      {tab === 'firmware' && <FirmwarePanel go={setTab} />}
       {tab === 'health' && (
         <MeshHealthPanel
           state={mesh.state}
@@ -179,11 +281,12 @@ export function App() {
           go={setTab}
         />
       )}
+      {tab === 'discovery' && <DiscoveryPanel state={mesh.state} nodes={mesh.nodes} go={setTab} />}
       {tab === 'link-budget' && <LinkBudgetPanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} go={setTab} />}
-      {tab === 'rssi-distance' && <SignalDistancePanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} />}
-      {tab === 'coverage' && <CoveragePanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} />}
-      {tab === 'antennas' && <AntennaPanel />}
-      {tab === 'lora' && <LoRaCssPanel state={mesh.state} />}
+      {tab === 'rssi-distance' && <SignalDistancePanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} go={setTab} />}
+      {tab === 'coverage' && <CoveragePanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} go={setTab} />}
+      {tab === 'antennas' && <AntennaPanel go={setTab} />}
+      {tab === 'lora' && <LoRaCssPanel state={mesh.state} go={setTab} />}
       {tab === 'mesh-routing' && <MeshRoutingPanel nodes={mesh.nodes} links={mesh.links} state={mesh.state} myNode={myNode} go={setTab} />}
       {tab === 'reality' && <MeshRealityPanel nodes={mesh.nodes} myNode={myNode} state={mesh.state} go={setTab} />}
       {tab === 'expectations' && <ExpectationPanel nodes={mesh.nodes} myNode={myNode} state={mesh.state} />}

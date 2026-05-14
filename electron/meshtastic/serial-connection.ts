@@ -15,6 +15,50 @@ export interface PortInfo {
   chipFamily?: ChipFamily;
 }
 
+/**
+ * Aggregated counters for the Device Lab panel. Reset implicitly on each
+ * connect — callers can snapshot mid-session to compare over time.
+ */
+export interface PortStats {
+  openedAt: number | null;
+  lastDataAt: number | null;
+  bytesIn: number;
+  bytesOut: number;
+  framesIn: number;
+  framesOut: number;
+  framesCorrupt: number;
+  errorCount: number;
+  reconnectCount: number;
+}
+
+/**
+ * Structured lifecycle events surfaced to the Device Lab timeline.
+ * "kind" is wide enough to cover everything we currently log via console.
+ */
+export type DeviceEventKind =
+  | 'open' | 'close' | 'reconnect-attempt' | 'reconnect-ok'
+  | 'error' | 'reset' | 'frame-corrupt' | 'note';
+export interface DeviceEvent {
+  at: number;
+  kind: DeviceEventKind;
+  detail?: string;
+}
+
+/**
+ * Hardware-reset recipe. ESP32 boards drive EN/IO0 via the USB-serial chip's
+ * RTS/DTR lines; nRF52840 boards use a 1200-baud "touch" to trigger DFU; the
+ * RP2040 BOOTSEL pin is hardware-only.
+ */
+export type ResetProfile =
+  | 'esp32'              // pulse EN via RTS (classic auto-reset)
+  | 'esp32-bootloader'   // classic_reset + IO0 low → ROM bootloader
+  | 'nrf52-dfu'          // close, reopen at 1200 baud, close → Adafruit nRF52 DFU
+  | 'rp2040-bootsel';    // instruction-only; not software-triggerable
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 // Meshtastic serial frame constants
 const MAGIC_BYTE_1 = 0x94;
 const MAGIC_BYTE_2 = 0xC3;
@@ -34,6 +78,11 @@ export class MeshtasticSerialConnection {
   private disconnectCallback: (() => void) | null = null;
   private reconnectCallback: (() => void) | null = null;
   private errorCallback: ((err: Error) => void) | null = null;
+
+  // Device Lab plumbing — raw byte feed, structured event log, port stats.
+  private rawCallback: ((chunk: Uint8Array, direction: 'rx' | 'tx') => void) | null = null;
+  private eventCallback: ((evt: DeviceEvent) => void) | null = null;
+  private stats: PortStats = freshStats();
 
   /**
    * Enumerate every serial port and classify each one. Returns confirmed,
@@ -85,8 +134,11 @@ export class MeshtasticSerialConnection {
     this.explicitDisconnect = false;
     this.reconnectAttempts = 0;
     this.buffer = Buffer.alloc(0);
+    this.stats = freshStats();
 
     await this.openPort(portPath);
+    this.stats.openedAt = Date.now();
+    this.emitEvent({ kind: 'open', at: Date.now(), detail: portPath });
   }
 
   async disconnect(): Promise<void> {
@@ -124,9 +176,14 @@ export class MeshtasticSerialConnection {
     frame.writeUInt16BE(payload.length, 2);
     frame.set(payload, FRAME_HEADER_SIZE);
 
+    this.rawCallback?.(new Uint8Array(frame), 'tx');
+    this.stats.bytesOut += frame.length;
+    this.stats.framesOut++;
     this.port.write(frame, (err) => {
       if (err) {
+        this.stats.errorCount++;
         console.error(`[serial:${this.portPath}] write FAILED (${payload.length}b):`, err.message);
+        this.emitEvent({ kind: 'error', at: Date.now(), detail: `tx failed: ${err.message}` });
         this.emitError(new Error(`Serial write failed: ${err.message}`));
       } else {
         // Log everything except heartbeats (4-byte frames) — those are too noisy.
@@ -153,6 +210,79 @@ export class MeshtasticSerialConnection {
     this.errorCallback = callback;
   }
 
+  /** Subscribe to every raw byte chunk read from or written to the port. */
+  onRaw(callback: (chunk: Uint8Array, direction: 'rx' | 'tx') => void): void {
+    this.rawCallback = callback;
+  }
+
+  /** Subscribe to lifecycle events (open/close/reset/error/etc). */
+  onEvent(callback: (evt: DeviceEvent) => void): void {
+    this.eventCallback = callback;
+  }
+
+  getStats(): PortStats {
+    return { ...this.stats };
+  }
+
+  /**
+   * Trigger a hardware-level reset over USB-serial control lines.
+   * - 'esp32' / 'esp32-bootloader': pulse EN/IO0 via RTS/DTR (works on
+   *   CP210x, CH9102, FTDI, and native ESP32-S3 USB-CDC).
+   * - 'nrf52-dfu': close, reopen at 1200 baud for 100 ms, close. The
+   *   Adafruit nRF52840 bootloader watches for that exact sequence.
+   * - 'rp2040-bootsel': not software-triggerable; throws with a hint.
+   */
+  async resetDevice(profile: ResetProfile): Promise<void> {
+    if (profile === 'rp2040-bootsel') {
+      throw new Error('RP2040 BOOTSEL is hardware-only — hold the BOOTSEL button, then plug USB in (or tap RUN/reset).');
+    }
+    if (profile === 'nrf52-dfu') {
+      const path = this.portPath;
+      if (!path) throw new Error('No port path on record to perform 1200-baud DFU touch.');
+      this.explicitDisconnect = true; // suppress our own reconnect loop
+      try { await this.closePort(); } catch { /* best-effort */ }
+      await new Promise<void>((resolve, reject) => {
+        const touch = new SerialPort({ path, baudRate: 1200, autoOpen: false });
+        touch.open((err) => {
+          if (err) return reject(new Error(`1200-baud touch failed: ${err.message}`));
+          setTimeout(() => touch.close(() => resolve()), 120);
+        });
+      });
+      this.emitEvent({ kind: 'reset', at: Date.now(), detail: 'nrf52-dfu (1200-baud touch)' });
+      // Caller (manager) handles re-discovery — the device disappears for a
+      // few seconds and may come back as a USB MSC drive instead.
+      this.explicitDisconnect = false;
+      return;
+    }
+    if (!this.port?.isOpen) throw new Error('Port not open — cannot toggle RTS/DTR.');
+    if (profile === 'esp32') {
+      // Classic ESP32 hard reset: drop RTS for ~100 ms.
+      await this.setLines(false, true);   // EN low
+      await sleepMs(100);
+      await this.setLines(false, false);  // EN released
+    } else if (profile === 'esp32-bootloader') {
+      // Classic esptool reset-to-bootloader sequence.
+      await this.setLines(false, true);   // RTS=1 → EN low (chip held in reset)
+      await sleepMs(100);
+      await this.setLines(true, false);   // DTR=1 → IO0 low, RTS=0 → EN high (boot from ROM)
+      await sleepMs(50);
+      await this.setLines(false, false);  // release both
+    }
+    this.emitEvent({ kind: 'reset', at: Date.now(), detail: profile });
+  }
+
+  private setLines(dtr: boolean, rts: boolean): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const p = this.port;
+      if (!p) return reject(new Error('port not open'));
+      p.set({ dtr, rts }, (err) => (err ? reject(err) : resolve()));
+    });
+  }
+
+  private emitEvent(evt: DeviceEvent): void {
+    this.eventCallback?.(evt);
+  }
+
   // --- Internal methods ---
 
   private async openPort(portPath: string): Promise<void> {
@@ -164,16 +294,22 @@ export class MeshtasticSerialConnection {
       });
 
       port.on('data', (chunk: Buffer) => {
+        this.stats.bytesIn += chunk.length;
+        this.stats.lastDataAt = Date.now();
+        this.rawCallback?.(new Uint8Array(chunk), 'rx');
         this.buffer = Buffer.concat([this.buffer, chunk]);
         this.processBuffer();
       });
 
       port.on('error', (err: Error) => {
+        this.stats.errorCount++;
+        this.emitEvent({ kind: 'error', at: Date.now(), detail: err.message });
         this.emitError(err);
         this.attemptReconnect();
       });
 
       port.on('close', () => {
+        this.emitEvent({ kind: 'close', at: Date.now(), detail: this.explicitDisconnect ? 'user disconnect' : 'unexpected' });
         if (!this.explicitDisconnect) {
           this.disconnectCallback?.();
           this.attemptReconnect();
@@ -244,6 +380,8 @@ export class MeshtasticSerialConnection {
 
       // Corrupt frame — skip past these magic bytes and rescan
       if (payloadLength > MAX_FRAME_SIZE || payloadLength === 0) {
+        this.stats.framesCorrupt++;
+        this.emitEvent({ kind: 'frame-corrupt', at: Date.now(), detail: `len=${payloadLength}` });
         this.buffer = this.buffer.subarray(2);
         continue;
       }
@@ -258,6 +396,7 @@ export class MeshtasticSerialConnection {
       // Extract the payload and deliver it
       const payload = new Uint8Array(this.buffer.subarray(FRAME_HEADER_SIZE, totalFrameSize));
       this.buffer = this.buffer.subarray(totalFrameSize);
+      this.stats.framesIn++;
 
       this.fromRadioCallback?.(payload);
     }
@@ -281,12 +420,15 @@ export class MeshtasticSerialConnection {
     }
 
     this.reconnectAttempts++;
+    this.stats.reconnectCount = this.reconnectAttempts;
+    this.emitEvent({ kind: 'reconnect-attempt', at: Date.now(), detail: `attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}` });
     this.port = null;
     this.buffer = Buffer.alloc(0);
 
     setTimeout(async () => {
       try {
         await this.openPort(this.portPath);
+        this.emitEvent({ kind: 'reconnect-ok', at: Date.now() });
         this.reconnectAttempts = 0;
         this.reconnectCallback?.();
       } catch (err) {
@@ -299,6 +441,15 @@ export class MeshtasticSerialConnection {
   private emitError(err: Error): void {
     this.errorCallback?.(err);
   }
+}
+
+function freshStats(): PortStats {
+  return {
+    openedAt: null, lastDataAt: null,
+    bytesIn: 0, bytesOut: 0,
+    framesIn: 0, framesOut: 0, framesCorrupt: 0,
+    errorCount: 0, reconnectCount: 0,
+  };
 }
 
 function buildDescription(port: { manufacturer?: string; vendorId?: string; productId?: string }): string {

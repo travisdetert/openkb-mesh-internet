@@ -122,6 +122,15 @@ interface PendingSend {
 const HEARTBEAT_MS = 5 * 60 * 1000;
 const ACK_TIMEOUT_MS = 60 * 1000;
 const RECONNECT_RECONFIG_DELAY_MS = 500;
+/**
+ * How often to ask the radio for a fresh nodeDB dump. Meshtastic's design is
+ * push-only — peers' NodeInfo arrives when *they* decide to broadcast (~3 hr
+ * default), and our app sits passively in between. A periodic re-sync catches
+ * cases where the radio's USB stream stalls silently or where peers were heard
+ * while our local state drifted. 15 minutes is a balance between freshness
+ * and not flooding ourselves with redundant NodeInfo replays.
+ */
+const NODE_REFRESH_MS = 15 * 60 * 1000;
 
 export class MeshtasticController extends EventEmitter {
   private conn: MeshtasticSerialConnection;
@@ -133,6 +142,9 @@ export class MeshtasticController extends EventEmitter {
   private db: MeshDatabase | null;
   private pending = new Map<number, PendingSend>();
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private nodeRefreshTimer: NodeJS.Timeout | null = null;
+  /** Wall-clock time (ms) of the last completed nodeDB resync. */
+  private lastRefreshAt: number = 0;
   private outQueue: Uint8Array[] = [];
   private outFlushScheduled = false;
   /** In-memory ring of recent outgoing packet traces, keyed by packetId. */
@@ -146,6 +158,7 @@ export class MeshtasticController extends EventEmitter {
     this.conn.onFromRadio((bytes) => this.handleFromRadio(bytes));
     this.conn.onDisconnect(() => {
       this.stopHeartbeat();
+      this.stopNodeRefresh();
       this.setState({ status: 'disconnected' });
     });
     this.conn.onReconnect(() => {
@@ -154,31 +167,18 @@ export class MeshtasticController extends EventEmitter {
       setTimeout(() => this.requestConfig(), RECONNECT_RECONFIG_DELAY_MS);
     });
     this.conn.onError((err) => this.setState({ ...this.state, error: err.message }));
+    // Forward Device Lab telemetry up to the manager which broadcasts via IPC.
+    this.conn.onRaw((chunk, direction) => this.emit('serial-raw', { chunk, direction }));
+    this.conn.onEvent((evt) => this.emit('serial-event', evt));
 
-    // Hydrate in-memory state from DB so panels work pre-connect
+    // Hydrate messages from the shared DB so the chat history is visible
+    // pre-connect. We intentionally do NOT hydrate nodes from the DB: that
+    // would seed every controller with the union of nodes that every radio
+    // in the app has ever heard, making each per-radio nodeDB count
+    // identical and meaningless. Each controller's nodes are built up
+    // strictly from its own wantConfig handshake + live packets, so
+    // `getNodes()` reflects what *this* radio actually knows.
     if (this.db) {
-      const dbNodes = this.db.getNodes();
-      const positions = this.db.getLatestPositions();
-      for (const n of dbNodes) {
-        const pos = positions.get(n.node_num);
-        const rec: NodeRecord = {
-          num: n.node_num,
-          longName: n.long_name ?? '',
-          shortName: n.short_name ?? '',
-          macaddr: '',
-          hwModel: n.hw_model ?? 0,
-          hwModelName: lookupHwModel(n.hw_model ?? 0),
-          firstHeard: Math.floor(n.first_seen / 1000),
-          packetCount: 0,
-          lastHeard: Math.floor((n.last_seen ?? 0) / 1000),
-        };
-        if (pos) {
-          rec.lat = pos.lat;
-          rec.lon = pos.lon;
-          rec.altitude = pos.altitude;
-        }
-        this.nodes.set(n.node_num, rec);
-      }
       const recentMsgs = this.db.getRecentMessages(200);
       this.messages = recentMsgs.map((m) => ({
         id: m.id, from: m.from_num, to: m.to_num, channel: m.channel, text: m.text,
@@ -212,6 +212,14 @@ export class MeshtasticController extends EventEmitter {
     return Array.from(this.traces.values()).sort((a, b) => b.sentAt - a.sentAt);
   }
 
+  getPortStats() {
+    return this.conn.getStats();
+  }
+
+  resetDevice(profile: import('./serial-connection').ResetProfile): Promise<void> {
+    return this.conn.resetDevice(profile);
+  }
+
   private appendTraceEvent(packetId: number, ev: TraceEvent): void {
     const t = this.traces.get(packetId);
     if (!t) return;
@@ -241,6 +249,7 @@ export class MeshtasticController extends EventEmitter {
 
   async disconnect(): Promise<void> {
     this.stopHeartbeat();
+    this.stopNodeRefresh();
     await this.conn.disconnect();
     this.setState({ status: 'disconnected' });
   }
@@ -248,6 +257,34 @@ export class MeshtasticController extends EventEmitter {
   private requestConfig(): void {
     const configId = (Math.random() * 0xffffffff) >>> 0;
     this.enqueueToRadio(encodeToRadio_WantConfig(configId));
+    this.lastRefreshAt = Date.now();
+  }
+
+  /** Public: ask the radio to redump its nodeDB now. Used by the Refresh button. */
+  refresh(): void {
+    console.log('[controller] manual refresh requested');
+    this.requestConfig();
+  }
+
+  /** When was the most recent nodeDB resync (manual or scheduled)? Wall-clock ms. */
+  getLastRefreshAt(): number {
+    return this.lastRefreshAt;
+  }
+
+  private startNodeRefresh(): void {
+    this.stopNodeRefresh();
+    this.nodeRefreshTimer = setInterval(() => {
+      if (this.state.status !== 'ready') return;
+      console.log('[controller] scheduled nodeDB refresh');
+      this.requestConfig();
+    }, NODE_REFRESH_MS);
+  }
+
+  private stopNodeRefresh(): void {
+    if (this.nodeRefreshTimer) {
+      clearInterval(this.nodeRefreshTimer);
+      this.nodeRefreshTimer = null;
+    }
   }
 
   /**
@@ -527,6 +564,8 @@ export class MeshtasticController extends EventEmitter {
       case 'config_complete':
         this.setState({ ...this.state, status: 'ready' });
         this.startHeartbeat();
+        this.startNodeRefresh();
+        this.lastRefreshAt = Date.now();
         break;
 
       case 'packet':

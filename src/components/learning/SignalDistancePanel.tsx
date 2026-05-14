@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { LORA_PRESETS, DEFAULT_PRESET } from '../../data/lora-presets';
+import type { TabId } from '../TopNav';
+import { LearningModeBadge, LearningSeeAlso } from './LearningChrome';
 
 interface Props {
   nodes: NodeRecord[];
   state: ConnectionState;
   myNode?: NodeRecord;
   onMessageNode?: (n: number) => void;
+  go: (id: TabId) => void;
 }
 
 interface Sample {
@@ -47,7 +50,7 @@ function lossColor(db: number): string {
   return 'var(--bad)';
 }
 
-export function SignalDistancePanel({ nodes, state, myNode, onMessageNode }: Props) {
+export function SignalDistancePanel({ nodes, state, myNode, onMessageNode, go }: Props) {
   const [tab, setTab] = useState<Tab>('scatter');
   const [presetId, setPresetId] = useState(DEFAULT_PRESET.id);
   const [txPower, setTxPower] = useState(20);
@@ -97,6 +100,7 @@ export function SignalDistancePanel({ nodes, state, myNode, onMessageNode }: Pro
           </span>
         )}
       </p>
+      <LearningModeBadge mode="live" />
 
       <div className="subnav">
         <button className={'subnav-btn' + (tab === 'scatter' ? ' active' : '')} onClick={() => setTab('scatter')}>
@@ -119,6 +123,12 @@ export function SignalDistancePanel({ nodes, state, myNode, onMessageNode }: Pro
       )}
       {tab === 'trend' && <TrendTab nodes={nodes} myNode={myNode} onMessageNode={onMessageNode} />}
       {tab === 'outliers' && <OutliersTab samples={samples} onMessageNode={onMessageNode} />}
+
+      <LearningSeeAlso go={go} links={[
+        { to: 'coverage',    label: 'Coverage',    blurb: 'Fit a path-loss curve to this scatter and project geographic reach.' },
+        { to: 'link-budget', label: 'Link Budget', blurb: 'See the dB ledger that explains the predicted curve.' },
+        { to: 'antennas',    label: 'Antennas',    blurb: 'Most of your outliers are antenna problems.' },
+      ]} />
     </div>
   );
 }

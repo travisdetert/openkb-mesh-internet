@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useActiveConnId } from '../../hooks/MeshContext';
 import { PanelChannelHeader } from '../PanelChannelHeader';
 
@@ -91,10 +91,15 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
 
   return (
     <div className="page">
-      <h1 className="page-title">Nodes</h1>
-      <p className="page-sub">
-        Every node your radio has heard since it powered on. Click a row for detail. Direct = picked up off the air; Relayed = forwarded through another node.
-      </p>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+        <div>
+          <h1 className="page-title">Nodes</h1>
+          <p className="page-sub">
+            Every node your radio has heard since it powered on. Click a row for detail. Direct = picked up off the air; Relayed = forwarded through another node.
+          </p>
+        </div>
+        <NodeRefreshButton />
+      </div>
 
       <PanelChannelHeader state={state} label="LISTENING ON" />
 
@@ -373,6 +378,63 @@ function Stat({ label, value }: { label: string; value: string }) {
     <div>
       <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
       <div style={{ fontSize: 22, fontFamily: 'var(--mono)', marginTop: 2 }}>{value}</div>
+    </div>
+  );
+}
+
+/**
+ * Manual "refresh nodeDB from radio" button. The controller already runs a
+ * scheduled refresh every 15 min on its own — this exposes the same wantConfig
+ * round-trip on demand for users who want fresh data right now.
+ */
+function NodeRefreshButton() {
+  const connId = useActiveConnId();
+  const [busy, setBusy] = useState(false);
+  const [lastAt, setLastAt] = useState<number>(0);
+  const [nowTick, setNowTick] = useState(0);
+
+  // Poll the last-refresh timestamp every 5s so the "X ago" stays live.
+  useEffect(() => {
+    if (!connId) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const t = await window.mesh.lastRefreshAt(connId);
+        if (!cancelled) setLastAt(t);
+      } catch { /* ignore */ }
+    };
+    tick();
+    const id = setInterval(() => { setNowTick((n) => n + 1); tick(); }, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [connId]);
+
+  if (!connId) return null;
+  const sinceMs = lastAt ? Math.max(0, Date.now() - lastAt) : 0;
+  const sinceLabel = !lastAt ? 'never'
+    : sinceMs < 60_000 ? 'just now'
+    : sinceMs < 60 * 60_000 ? `${Math.floor(sinceMs / 60_000)}m ago`
+    : `${Math.floor(sinceMs / (60 * 60_000))}h ago`;
+
+  const onClick = async () => {
+    setBusy(true);
+    try { await window.mesh.refresh(connId); }
+    finally { setTimeout(() => setBusy(false), 1500); }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, flexShrink: 0 }}>
+      <button
+        className="ghost"
+        onClick={onClick}
+        disabled={busy}
+        title="Re-send wantConfig to the radio — forces a fresh dump of its nodeDB. Runs automatically every 15 min."
+        style={{ padding: '6px 14px', fontSize: 12, whiteSpace: 'nowrap' }}
+      >
+        {busy ? 'Refreshing…' : '⟳ Refresh from radio'}
+      </button>
+      <span style={{ fontSize: 10.5, color: 'var(--text-faint)', fontFamily: 'var(--mono)' }} key={nowTick}>
+        last sync {sinceLabel}
+      </span>
     </div>
   );
 }
