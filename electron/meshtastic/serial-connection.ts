@@ -2,6 +2,15 @@
 
 import { SerialPort } from 'serialport';
 import { classifyPort, type ChipFamily, type Confidence } from './device-database';
+import {
+  type MeshtasticTransport,
+  type PortStats,
+  type DeviceEvent,
+  type DeviceEventKind,
+  type ResetProfile,
+  type TransportKind,
+  freshStats,
+} from './transport';
 
 export interface PortInfo {
   path: string;
@@ -15,45 +24,10 @@ export interface PortInfo {
   chipFamily?: ChipFamily;
 }
 
-/**
- * Aggregated counters for the Device Lab panel. Reset implicitly on each
- * connect — callers can snapshot mid-session to compare over time.
- */
-export interface PortStats {
-  openedAt: number | null;
-  lastDataAt: number | null;
-  bytesIn: number;
-  bytesOut: number;
-  framesIn: number;
-  framesOut: number;
-  framesCorrupt: number;
-  errorCount: number;
-  reconnectCount: number;
-}
-
-/**
- * Structured lifecycle events surfaced to the Device Lab timeline.
- * "kind" is wide enough to cover everything we currently log via console.
- */
-export type DeviceEventKind =
-  | 'open' | 'close' | 'reconnect-attempt' | 'reconnect-ok'
-  | 'error' | 'reset' | 'frame-corrupt' | 'note';
-export interface DeviceEvent {
-  at: number;
-  kind: DeviceEventKind;
-  detail?: string;
-}
-
-/**
- * Hardware-reset recipe. ESP32 boards drive EN/IO0 via the USB-serial chip's
- * RTS/DTR lines; nRF52840 boards use a 1200-baud "touch" to trigger DFU; the
- * RP2040 BOOTSEL pin is hardware-only.
- */
-export type ResetProfile =
-  | 'esp32'              // pulse EN via RTS (classic auto-reset)
-  | 'esp32-bootloader'   // classic_reset + IO0 low → ROM bootloader
-  | 'nrf52-dfu'          // close, reopen at 1200 baud, close → Adafruit nRF52 DFU
-  | 'rp2040-bootsel';    // instruction-only; not software-triggerable
+// PortStats / DeviceEvent / DeviceEventKind / ResetProfile are now declared
+// in transport.ts and re-exported here for backwards compatibility with
+// imports elsewhere in the codebase.
+export type { PortStats, DeviceEvent, DeviceEventKind, ResetProfile } from './transport';
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -67,7 +41,8 @@ const FRAME_HEADER_SIZE = 4; // 2 magic + 2 length
 const RECONNECT_DELAY_MS = 2000;
 const MAX_RECONNECT_ATTEMPTS = 3;
 
-export class MeshtasticSerialConnection {
+export class MeshtasticSerialConnection implements MeshtasticTransport {
+  readonly kind: TransportKind = 'serial';
   private port: SerialPort | null = null;
   private buffer: Buffer = Buffer.alloc(0);
   private portPath: string = '';
@@ -460,15 +435,6 @@ export class MeshtasticSerialConnection {
   private emitError(err: Error): void {
     this.errorCallback?.(err);
   }
-}
-
-function freshStats(): PortStats {
-  return {
-    openedAt: null, lastDataAt: null,
-    bytesIn: 0, bytesOut: 0,
-    framesIn: 0, framesOut: 0, framesCorrupt: 0,
-    errorCount: 0, reconnectCount: 0,
-  };
 }
 
 function buildDescription(port: { manufacturer?: string; vendorId?: string; productId?: string }): string {

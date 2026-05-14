@@ -1,11 +1,13 @@
 import { EventEmitter } from 'events';
 import { MeshtasticSerialConnection, PortInfo } from './serial-connection';
+import type { MeshtasticTransport } from './transport';
 import {
   decodeFromRadio,
   encodeToRadio_WantConfig,
   encodeToRadio_SendText,
   encodeToRadio_SendTraceroute,
   encodeToRadio_BroadcastNodeInfo,
+  encodeToRadio_Reboot,
   encodeToRadio_Heartbeat,
   encodeToRadio_SetOwner,
   encodeToRadio_SetLoraConfig,
@@ -134,7 +136,7 @@ const RECONNECT_RECONFIG_DELAY_MS = 500;
 const NODE_REFRESH_MS = 15 * 60 * 1000;
 
 export class MeshtasticController extends EventEmitter {
-  private conn: MeshtasticSerialConnection;
+  private conn: MeshtasticTransport;
   private state: ConnectionState = { status: 'disconnected' };
   private nodes = new Map<number, NodeRecord>();
   private messages: TextMessage[] = [];
@@ -152,10 +154,13 @@ export class MeshtasticController extends EventEmitter {
   private traces = new Map<number, PacketTrace>();
   private maxTraces = 100;
 
-  constructor(db: MeshDatabase | null = null) {
+  /** `transport` is optional — defaults to a fresh serial connection so the
+   *  legacy `connect(portPath)` flow keeps working. Manager passes in a BLE
+   *  proxy transport for Bluetooth-backed controllers. */
+  constructor(db: MeshDatabase | null = null, transport?: MeshtasticTransport) {
     super();
     this.db = db;
-    this.conn = new MeshtasticSerialConnection();
+    this.conn = transport ?? new MeshtasticSerialConnection();
     this.conn.onFromRadio((bytes) => this.handleFromRadio(bytes));
     this.conn.onDisconnect(() => {
       this.stopHeartbeat();
@@ -265,6 +270,23 @@ export class MeshtasticController extends EventEmitter {
   refresh(): void {
     console.log('[controller] manual refresh requested');
     this.requestConfig();
+  }
+
+  /**
+   * Tell the radio to reboot in `seconds`. Returns false if myNodeNum
+   * isn't known yet (handshake not finished). Default 5s gives the host
+   * time to see any final acks before the link drops; the radio then
+   * comes back on USB after ~8–15s depending on chip family.
+   */
+  reboot(seconds: number = 5): boolean {
+    const my = this.state.myInfo?.myNodeNum;
+    if (!my) {
+      console.warn('[controller] reboot dropped — myNodeNum not yet known');
+      return false;
+    }
+    console.log(`[controller] reboot scheduled (${seconds}s) for !${my.toString(16).padStart(8, '0')}`);
+    this.enqueueToRadio(encodeToRadio_Reboot(my, seconds));
+    return true;
   }
 
   /**
@@ -558,7 +580,34 @@ export class MeshtasticController extends EventEmitter {
     switch (msg.type) {
       case 'my_info':
         if (msg.myInfo) {
-          this.setState({ ...this.state, myInfo: msg.myInfo });
+          // Merge rather than replace — myInfo and metadata both flow
+          // into the same ConnectionState.myInfo object (myNodeNum from
+          // here, capabilities + firmware version from metadata). Either
+          // can arrive first.
+          this.setState({ ...this.state, myInfo: { ...this.state.myInfo, ...msg.myInfo } });
+        }
+        break;
+
+      case 'metadata':
+        // DeviceMetadata is where the radio reports its real capabilities:
+        // firmware version, has_wifi, has_bluetooth, has_ethernet, hw_model,
+        // role. Merge into myInfo so the rest of the app sees a single
+        // unified identity object. Without this branch the Bluetooth /
+        // WiFi settings panels (which gate on myInfo.hasBluetooth /
+        // hasWifi) would always think the radio lacks those capabilities.
+        if (msg.metadata) {
+          const meta = msg.metadata;
+          const existing = this.state.myInfo;
+          this.setState({
+            ...this.state,
+            myInfo: {
+              myNodeNum: existing?.myNodeNum ?? 0,
+              firmwareVersion: meta.firmwareVersion || existing?.firmwareVersion || '',
+              hasWifi:        existing?.hasWifi      || meta.hasWifi,
+              hasBluetooth:   existing?.hasBluetooth || meta.hasBluetooth,
+              maxChannels:    existing?.maxChannels  ?? 8,
+            },
+          });
         }
         break;
 
@@ -607,21 +656,34 @@ export class MeshtasticController extends EventEmitter {
   private upsertNode(info: NodeInfo): void {
     const existing = this.nodes.get(info.num);
     const now = Math.floor(Date.now() / 1000);
+    // Spread-merge would overwrite a known shortName / longName / hwModel
+    // with an empty / zero value when a partial NodeInfo arrives (e.g.
+    // inline in a position-bearing packet whose User proto fields decoded
+    // to empty defaults). For identity fields, only accept the new value
+    // when it actually carries content — otherwise keep what we had.
+    const hwModelEffective = info.hwModel || existing?.hwModel || 0;
     const merged: NodeRecord = {
       ...(existing ?? {
         firstHeard: now,
         packetCount: 0,
-        hwModelName: lookupHwModel(info.hwModel),
+        hwModelName: lookupHwModel(hwModelEffective),
       }),
       ...info,
-      hwModelName: lookupHwModel(info.hwModel),
+      longName:   info.longName  || existing?.longName  || '',
+      shortName:  info.shortName || existing?.shortName || '',
+      id:         info.id        || existing?.id        || '',
+      macaddr:    info.macaddr   || existing?.macaddr   || '',
+      hwModel:    hwModelEffective,
+      hwModelName: lookupHwModel(hwModelEffective),
     };
     this.nodes.set(info.num, merged);
     this.emit('node', merged);
 
     if (this.db) {
       const ts = Date.now();
-      this.db.upsertNode(info.num, info.longName ?? '', info.shortName ?? '', info.hwModel ?? 0, ts);
+      // Persist the merged identity, not the raw incoming info — same reason
+      // as the in-memory merge above.
+      this.db.upsertNode(info.num, merged.longName, merged.shortName, merged.hwModel, ts);
       if (info.lat !== undefined && info.lon !== undefined && (info.lat !== 0 || info.lon !== 0)) {
         this.db.insertPosition(info.num, info.lat, info.lon, info.altitude ?? 0, ts);
       }

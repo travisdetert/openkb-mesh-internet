@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { MeshtasticController, ConnectionState, NodeRecord, TextMessage, PacketTrace } from './controller';
 import { MeshtasticSerialConnection, PortInfo, ResetProfile } from './serial-connection';
+import { BleProxyTransport } from './ble-proxy-transport';
 import { LoRaConfigEdit, MeshPacket, DeviceConfigMsg, PositionConfigMsg, PowerConfigMsg, NetworkConfigMsg, DisplayConfigMsg, BluetoothConfigMsg, MQTTConfigMsg, ChannelEdit } from './protobuf-codec';
 import { MeshDatabase } from '../database';
 
@@ -12,7 +13,10 @@ import { MeshDatabase } from '../database';
  */
 export class MeshManager extends EventEmitter {
   private controllers = new Map<string, MeshtasticController>();
-  private portToId = new Map<string, string>(); // portPath → connId
+  private portToId = new Map<string, string>(); // serial portPath → connId
+  /** BLE-backed transports keyed by connId — used to route incoming frames
+   *  from the renderer into the right MeshtasticController. */
+  private bleTransports = new Map<string, BleProxyTransport>();
   private nextSeq = 1;
   private db: MeshDatabase | null;
 
@@ -101,59 +105,14 @@ export class MeshManager extends EventEmitter {
 
     const id = `conn-${this.nextSeq++}`;
     const controller = new MeshtasticController(this.db);
-
-    // Forward every per-controller event with the connId stamped on it.
-    controller.on('state', (state: ConnectionState) => {
-      this.emit('state', { connId: id, state });
-      // Unexpected port close (cable unplugged, device reset, etc.). Treat
-      // it as terminal: drop the controller and tell the UI the connection
-      // is gone, otherwise the ghost row sticks around forever and the
-      // replug shows up as a *new* connId next to it.
-      //
-      // By the time we get here, the serial layer has already exhausted its
-      // internal reconnect attempts — see MeshtasticSerialConnection.
-      // attemptReconnect, which only fires the disconnect callback after
-      // MAX_RECONNECT_ATTEMPTS. So this branch represents "really gone".
-      if (state.status === 'disconnected' && this.controllers.get(id) === controller) {
-        if (this.portToId.get(portPath) === id) this.portToId.delete(portPath);
-        this.controllers.delete(id);
-        // Force-close the underlying port and suppress any future reconnect.
-        // Without this, an in-flight reconnect timer scheduled before the
-        // give-up branch fired could still try to reopen the port after
-        // we've forgotten about this connection.
-        void controller.disconnect().catch(() => { /* best-effort cleanup */ });
-        this.emit('connection-removed', { connId: id });
-        // NOTE: not adding to recentlyClosed — we *want* auto-connect to
-        // grab the device again as soon as it reappears on the bus.
-      }
-    });
-    controller.on('node', (node: NodeRecord) => this.emit('node', { connId: id, node }));
-    controller.on('message', (message: TextMessage) => this.emit('message', { connId: id, message }));
-    controller.on('message-status', (message: TextMessage) => this.emit('message-status', { connId: id, message }));
-    controller.on('packet', (packet: MeshPacket) => this.emit('packet', { connId: id, packet }));
-    controller.on('telemetry-sample', (sample: unknown) => this.emit('telemetry-sample', { connId: id, sample }));
-    controller.on('traceroute-sent', (trace: unknown) => this.emit('traceroute-sent', { connId: id, trace }));
-    controller.on('traceroute-response', (response: unknown) => this.emit('traceroute-response', { connId: id, response }));
-    controller.on('trace-update', (trace: PacketTrace) => this.emit('trace-update', { connId: id, trace }));
-    controller.on('serial-raw', (payload: { chunk: Uint8Array; direction: 'rx' | 'tx' }) => {
-      // Hand the raw chunk to the renderer as a base64 string — Uint8Array
-      // serializes poorly across IPC and base64 is compact enough for a few
-      // KB/s of traffic.
-      this.emit('serial-raw', {
-        connId: id,
-        direction: payload.direction,
-        at: Date.now(),
-        // toString('base64') over a Uint8Array first goes through Buffer.from
-        bytes: Buffer.from(payload.chunk).toString('base64'),
-      });
-    });
-    controller.on('serial-event', (evt: unknown) => {
-      this.emit('serial-event', { connId: id, event: evt });
+    this.wireController(id, controller, {
+      endpoint: portPath,
+      onTeardown: () => { if (this.portToId.get(portPath) === id) this.portToId.delete(portPath); },
     });
 
     this.controllers.set(id, controller);
     this.portToId.set(portPath, id);
-    this.emit('connection-added', { connId: id, portPath });
+    this.emit('connection-added', { connId: id, portPath, transport: 'serial' });
 
     try {
       await controller.connect(portPath);
@@ -165,6 +124,114 @@ export class MeshManager extends EventEmitter {
       throw err;
     }
     return id;
+  }
+
+  /**
+   * Register a controller for a Bluetooth-backed session. The renderer owns
+   * the GATT pipe and pushes/pulls frames via IPC. We hand back the connId so
+   * the renderer knows which session to route subsequent frames to.
+   */
+  async connectBle(deviceName: string): Promise<string> {
+    const id = `conn-${this.nextSeq++}`;
+    const transport = new BleProxyTransport();
+    const controller = new MeshtasticController(this.db, transport);
+    this.wireController(id, controller, { endpoint: deviceName, onTeardown: () => {
+      // Drop the transport routing entry too.
+      this.bleTransports.delete(id);
+    }});
+
+    // Forward outbound write requests to the renderer over IPC.
+    transport.on('write-request', (payload: Uint8Array) => {
+      this.emit('ble-tx-frame', {
+        connId: id,
+        bytes: Buffer.from(payload).toString('base64'),
+      });
+    });
+    // Disconnect-from-main: tell the renderer to close the GATT link.
+    transport.on('disconnect-request', () => {
+      this.emit('ble-disconnect-request', { connId: id });
+    });
+
+    this.bleTransports.set(id, transport);
+    this.controllers.set(id, controller);
+    this.emit('connection-added', { connId: id, portPath: `ble:${deviceName}`, transport: 'ble' });
+
+    try {
+      await controller.connect(deviceName);
+    } catch (err) {
+      this.controllers.delete(id);
+      this.bleTransports.delete(id);
+      this.emit('connection-removed', { connId: id });
+      throw err;
+    }
+    return id;
+  }
+
+  /** Renderer pushes one decoded FromRadio frame into the matching controller. */
+  ingestBleFrame(connId: string, payload: Uint8Array): void {
+    const transport = this.bleTransports.get(connId);
+    if (!transport) {
+      console.warn(`[manager] ble frame for unknown connId ${connId} (${payload.length}b dropped)`);
+      return;
+    }
+    transport.ingestFromRadio(payload);
+  }
+
+  /** Renderer reports the GATT link has dropped. */
+  signalBleDisconnect(connId: string, reason?: string): void {
+    const transport = this.bleTransports.get(connId);
+    if (!transport) return;
+    transport.signalDisconnect(reason);
+  }
+
+  /** Renderer reports a GATT write or read error. */
+  signalBleError(connId: string, message: string): void {
+    const transport = this.bleTransports.get(connId);
+    if (!transport) return;
+    transport.signalError(message);
+  }
+
+  /**
+   * Wire up the standard event forwarders for a controller. Shared between
+   * serial and BLE so all the per-connection events (state, node, message,
+   * packet, telemetry, traceroute, raw, lifecycle) reach the renderer the
+   * same way regardless of transport.
+   */
+  private wireController(
+    id: string,
+    controller: MeshtasticController,
+    opts: { endpoint: string; onTeardown: () => void },
+  ): void {
+    controller.on('state', (state: ConnectionState) => {
+      this.emit('state', { connId: id, state });
+      // Terminal-disconnect cleanup. See the serial commentary in the older
+      // version of this method — same idea, transport-agnostic now.
+      if (state.status === 'disconnected' && this.controllers.get(id) === controller) {
+        this.controllers.delete(id);
+        opts.onTeardown();
+        void controller.disconnect().catch(() => { /* best-effort */ });
+        this.emit('connection-removed', { connId: id });
+      }
+    });
+    controller.on('node', (node: NodeRecord) => this.emit('node', { connId: id, node }));
+    controller.on('message', (message: TextMessage) => this.emit('message', { connId: id, message }));
+    controller.on('message-status', (message: TextMessage) => this.emit('message-status', { connId: id, message }));
+    controller.on('packet', (packet: MeshPacket) => this.emit('packet', { connId: id, packet }));
+    controller.on('telemetry-sample', (sample: unknown) => this.emit('telemetry-sample', { connId: id, sample }));
+    controller.on('traceroute-sent', (trace: unknown) => this.emit('traceroute-sent', { connId: id, trace }));
+    controller.on('traceroute-response', (response: unknown) => this.emit('traceroute-response', { connId: id, response }));
+    controller.on('trace-update', (trace: PacketTrace) => this.emit('trace-update', { connId: id, trace }));
+    controller.on('serial-raw', (payload: { chunk: Uint8Array; direction: 'rx' | 'tx' }) => {
+      this.emit('serial-raw', {
+        connId: id,
+        direction: payload.direction,
+        at: Date.now(),
+        bytes: Buffer.from(payload.chunk).toString('base64'),
+      });
+    });
+    controller.on('serial-event', (evt: unknown) => {
+      this.emit('serial-event', { connId: id, event: evt });
+    });
   }
 
   async disconnect(connId: string): Promise<void> {
@@ -187,6 +254,35 @@ export class MeshManager extends EventEmitter {
   }
 
   /** Snapshot of every active connection's current state. */
+  /**
+   * Names a BLE scanner can match against to identify USB-connected radios
+   * we should skip auto-pairing. Returns the longName, shortName, and the
+   * default-derived "Meshtastic_xxxxxxxx" form for every radio attached
+   * over a non-BLE transport. Used by the select-bluetooth-device handler
+   * to avoid forcing concurrent USB + BLE traffic on the same chip, which
+   * makes some ESP32-S3 firmware wedge.
+   */
+  usbConnectedIdentities(): string[] {
+    const out: string[] = [];
+    for (const [, c] of this.controllers) {
+      // Only USB-attached radios — BLE-attached ones are obviously fine to
+      // reconnect to over BLE.
+      const transportKind = (c as any).conn?.kind;
+      if (transportKind === 'ble') continue;
+      const myNum = c.getState().myInfo?.myNodeNum;
+      if (!myNum) continue;
+      const me = c.getNodes().find((n) => n.num === myNum);
+      if (me?.longName) out.push(me.longName);
+      if (me?.shortName) out.push(me.shortName);
+      // Default Meshtastic firmware BT name: "Meshtastic_xxxxxxxx" (full
+      // 8-hex of node num). Some firmware uses the last-4 variant too.
+      const hex = (myNum >>> 0).toString(16).padStart(8, '0');
+      out.push(`Meshtastic_${hex}`);
+      out.push(`Meshtastic_${hex.slice(-4)}`);
+    }
+    return out;
+  }
+
   listConnections(): Array<{ connId: string; state: ConnectionState; portPath?: string }> {
     return Array.from(this.controllers.entries()).map(([connId, c]) => {
       const state = c.getState();
@@ -256,6 +352,10 @@ export class MeshManager extends EventEmitter {
    *  Returns false if the radio isn't ready (no myNodeNum yet). */
   broadcastNodeInfo(connId: string): boolean {
     return this.controllers.get(connId)?.broadcastNodeInfo() ?? false;
+  }
+  /** Schedule a remote reboot via admin message. Default 5s grace. */
+  reboot(connId: string, seconds: number = 5): boolean {
+    return this.controllers.get(connId)?.reboot(seconds) ?? false;
   }
   /** Last successful refresh (ms epoch), or 0 if not yet synced. */
   getLastRefreshAt(connId: string): number {

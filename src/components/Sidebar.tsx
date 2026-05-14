@@ -1,6 +1,7 @@
 import React from 'react';
 import { TABS, TabId } from './TopNav';
 import type { ConnectionView } from '../hooks/useMesh';
+import { useMeshContext } from '../hooks/MeshContext';
 
 type Tone = 'accent' | 'good' | 'warn' | 'bad' | 'dim';
 interface Badge { text: string; tone?: Tone }
@@ -43,6 +44,8 @@ export function Sidebar({
   nodesCount, positionedCount, packetsLast60s, unreadMessages, pulseKey, chatPulseKey,
   connections, activeConnId, onSelectConnection,
 }: Props) {
+  const { pendingReboots } = useMeshContext();
+  const liveNodeNums = new Set(connections.map((c) => c.state.myInfo?.myNodeNum).filter((n) => !!n) as number[]);
   const pill = pillFor(state, myNode);
   const isReady = state.status === 'ready';
   const battery = myNode?.batteryLevel;
@@ -86,15 +89,27 @@ export function Sidebar({
               const cMy = c.state.myInfo?.myNodeNum;
               const cNode = cMy ? c.nodes.find((n) => n.num === cMy) : undefined;
               const label = cNode?.shortName || cNode?.longName || c.portPath?.split('/').pop() || c.connId;
-              const dotCls = c.state.status === 'ready' ? 'ok' : c.state.status === 'disconnected' ? 'bad' : 'warn';
+              // Match the wizard's logic: if this radio is mid-reboot, show
+              // the countdown / "rebooting now" overlay instead of regular
+              // status, so the sidebar and the Connect tab tell the same story.
+              const rebootEntry = cMy ? pendingReboots[String(cMy)] : undefined;
+              const rebootElapsed = rebootEntry ? Math.floor((Date.now() - rebootEntry.startedAt) / 1000) : 0;
+              const rebootRemaining = rebootEntry ? Math.max(0, 5 - rebootElapsed) : 0;
+              const isRebooting = !!rebootEntry && rebootElapsed < 6;
+              const dotCls = isRebooting ? 'warn'
+                : c.state.status === 'ready' ? 'ok'
+                : c.state.status === 'disconnected' ? 'bad'
+                : 'warn';
               const cBatt = cNode?.batteryLevel;
               const cBattColor = cBatt === undefined ? undefined : cBatt > 50 ? 'var(--good)' : cBatt > 20 ? 'var(--warn)' : 'var(--bad)';
               const cNodes = c.nodes.length;
-              const subText = c.state.status === 'ready'
-                ? `${cNodes} nodes${cBatt !== undefined ? ' · 🔋 ' + cBatt + '%' : ''}`
-                : c.state.status === 'configuring' ? 'syncing nodeDB…'
-                : c.state.status === 'connecting'  ? 'opening port…'
-                : 'disconnected';
+              const subText = isRebooting
+                ? (rebootRemaining > 0 ? `↻ rebooting in ${rebootRemaining}s…` : '↻ rebooting now…')
+                : c.state.status === 'ready'
+                  ? `${cNodes} nodes${cBatt !== undefined ? ' · 🔋 ' + cBatt + '%' : ''}`
+                  : c.state.status === 'configuring' ? 'syncing nodeDB…'
+                  : c.state.status === 'connecting'  ? 'opening port…'
+                  : 'disconnected';
               return (
                 <button
                   key={c.connId}
@@ -108,13 +123,36 @@ export function Sidebar({
                       {label}
                       {isActiveRow && <span className="sidebar-conn-row-active-pill">active</span>}
                     </div>
-                    <div className="sidebar-conn-row-sub" style={cBatt !== undefined ? { color: cBattColor } : undefined}>
+                    <div className="sidebar-conn-row-sub" style={isRebooting ? { color: 'var(--warn)' } : (cBatt !== undefined ? { color: cBattColor } : undefined)}>
                       {subText}
                     </div>
                   </div>
                 </button>
               );
             })}
+            {/* Placeholder rows for radios that are mid-reboot AND already
+             *  off USB. They reappear as live rows the moment auto-connect
+             *  reattaches. */}
+            {Object.entries(pendingReboots)
+              .filter(([k]) => !liveNodeNums.has(parseInt(k, 10)))
+              .map(([k, entry]) => {
+                const elapsed = Math.floor((Date.now() - entry.startedAt) / 1000);
+                const label = entry.shortName || entry.longName || entry.portPath?.split('/').pop() || `!${parseInt(k, 10).toString(16).padStart(8, '0')}`;
+                return (
+                  <div
+                    key={`reboot-${k}`}
+                    className="sidebar-conn-row"
+                    style={{ opacity: 0.75, borderStyle: 'dashed', cursor: 'default' }}
+                    title="Radio is rebooting — auto-connect will reattach when it re-enumerates."
+                  >
+                    <span className="status-dot warn" />
+                    <div className="sidebar-conn-row-text">
+                      <div className="sidebar-conn-row-label">{label}</div>
+                      <div className="sidebar-conn-row-sub" style={{ color: 'var(--warn)' }}>↻ restarting · {elapsed}s</div>
+                    </div>
+                  </div>
+                );
+              })}
             <button className="sidebar-conn-add" onClick={() => onSelect('connect')} title="Open the Connect panel to add or manage radios">
               + Add / manage radios
             </button>

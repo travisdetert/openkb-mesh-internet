@@ -71,6 +71,69 @@ function createWindow() {
     const tag = level === 3 ? '[renderer error]' : level === 2 ? '[renderer warn]' : '[renderer]';
     console.log(`${tag} ${message}`);
   });
+
+  // WebBluetooth in Electron has no built-in chooser UI. We have to register
+  // this listener and pick a deviceId ourselves. For now: auto-pick the
+  // first device returned (the renderer filters requestDevice() on the
+  // Meshtastic service UUID, so any device that lands here is already a
+  // valid Meshtastic radio). A proper picker UI is a follow-up.
+  let scanState: { ticks: number; startedAt: number; cancelTimer: NodeJS.Timeout | null } | null = null;
+  const SCAN_TIMEOUT_MS = 15_000;
+  mainWindow.webContents.on('select-bluetooth-device', (event, deviceList, callback) => {
+    event.preventDefault();
+    if (!scanState) {
+      scanState = { ticks: 0, startedAt: Date.now(), cancelTimer: null };
+      // Start a hard timeout — Electron will keep re-firing this event
+      // indefinitely if no matching devices appear, so without a deadline
+      // the renderer's requestDevice() promise just hangs.
+      scanState.cancelTimer = setTimeout(() => {
+        console.warn(`[ble] scan: timed out after ${SCAN_TIMEOUT_MS / 1000}s with no Meshtastic devices — cancelling`);
+        callback('');
+        scanState = null;
+      }, SCAN_TIMEOUT_MS);
+    }
+    scanState.ticks++;
+
+    if (deviceList.length === 0) {
+      // Throttle the "still scanning" log so it doesn't flood. Electron
+      // fires this event repeatedly while scanning even with no results.
+      if (scanState.ticks === 1 || scanState.ticks % 20 === 0) {
+        const elapsed = ((Date.now() - scanState.startedAt) / 1000).toFixed(1);
+        console.log(`[ble] scan: still no Meshtastic devices in range (${elapsed}s elapsed, tick ${scanState.ticks})`);
+      }
+      return;
+    }
+
+    // Skip any device whose advertised name matches a radio we already have
+    // attached over USB. Forcing concurrent USB + BLE on the same ESP32-S3
+    // chip starves the USB CDC interrupt and Meshtastic firmware can wedge.
+    const usbNames = new Set(manager.usbConnectedIdentities());
+    const candidates = deviceList.filter((d) => !usbNames.has(d.deviceName || ''));
+    const skipped = deviceList.filter((d) => usbNames.has(d.deviceName || ''));
+    if (skipped.length > 0) {
+      console.log(`[ble] scan: skipping ${skipped.length} device(s) already on USB: ${skipped.map((d) => d.deviceName || d.deviceId).join(', ')}`);
+    }
+
+    if (candidates.length === 0) {
+      // Every candidate is a radio we already have on USB. Don't pair —
+      // wait for a non-USB device to appear, or time out.
+      if (scanState.ticks === 1 || scanState.ticks % 20 === 0) {
+        const elapsed = ((Date.now() - scanState.startedAt) / 1000).toFixed(1);
+        console.log(`[ble] scan: all ${deviceList.length} visible device(s) are already on USB (${elapsed}s elapsed)`);
+      }
+      return;
+    }
+
+    const chosen = candidates[0];
+    const elapsed = ((Date.now() - scanState.startedAt) / 1000).toFixed(1);
+    console.log(`[ble] scan: ${candidates.length} pairable device(s) after ${elapsed}s — auto-selecting "${chosen.deviceName || '(no name)'}" (id=${chosen.deviceId})`);
+    if (candidates.length > 1) {
+      console.log(`[ble] scan: other candidates ignored: ${candidates.slice(1).map((d) => d.deviceName || d.deviceId).join(', ')}`);
+    }
+    if (scanState.cancelTimer) clearTimeout(scanState.cancelTimer);
+    scanState = null;
+    callback(chosen.deviceId);
+  });
 }
 
 app.on('activate', () => {
@@ -140,6 +203,10 @@ app.whenReady().then(async () => {
   manager.on('connection-removed', (p) => broadcast('mesh:connectionRemoved', p));
   manager.on('serial-raw', (p) => broadcast('mesh:serialRaw', p));
   manager.on('serial-event', (p) => broadcast('mesh:serialEvent', p));
+  // BLE bridge: main asks renderer to write a frame to toRadio, and asks
+  // renderer to close GATT on manager-initiated disconnect.
+  manager.on('ble-tx-frame', (p) => broadcast('mesh:bleTxFrame', p));
+  manager.on('ble-disconnect-request', (p) => broadcast('mesh:bleDisconnectRequest', p));
 
   // ── IPC handlers ──────────────────────────────────────────────────
   ipcMain.handle('mesh:listPorts', () => MeshManager.listPorts());
@@ -176,8 +243,42 @@ app.whenReady().then(async () => {
   ipcMain.handle('mesh:setChannel',         (_e, args: { connId: string; channel: any }) => manager.setChannel(args.connId, args.channel));
   ipcMain.handle('mesh:getChannelSetUrl',   (_e, connId: string) => manager.getChannelSetUrl(connId));
   ipcMain.handle('mesh:applyChannelSetUrl', (_e, args: { connId: string; url: string }) => manager.applyChannelSetUrl(args.connId, args.url));
+  ipcMain.handle('mesh:bleStartSession',    async (_e, deviceName: string) => {
+    console.log(`[ble] bleStartSession deviceName="${deviceName}"`);
+    const id = await manager.connectBle(deviceName);
+    console.log(`[ble] bleStartSession → connId=${id}`);
+    return id;
+  });
+  // Throttled byte counter per connId so we get one log line per second of
+  // sustained traffic instead of one per frame.
+  const bleRxTotals = new Map<string, { bytes: number; frames: number; sinceLogged: number }>();
+  ipcMain.handle('mesh:bleRxFrame',         (_e, args: { connId: string; bytes: string }) => {
+    const buf = Buffer.from(args.bytes, 'base64');
+    manager.ingestBleFrame(args.connId, buf);
+    const totals = bleRxTotals.get(args.connId) ?? { bytes: 0, frames: 0, sinceLogged: Date.now() };
+    totals.bytes += buf.length;
+    totals.frames += 1;
+    if (Date.now() - totals.sinceLogged > 1000) {
+      console.log(`[ble] rx ${args.connId}: ${totals.frames}f / ${totals.bytes}B in the last ${((Date.now() - totals.sinceLogged) / 1000).toFixed(1)}s`);
+      totals.bytes = 0; totals.frames = 0; totals.sinceLogged = Date.now();
+    }
+    bleRxTotals.set(args.connId, totals);
+  });
+  ipcMain.handle('mesh:bleDisconnected',    (_e, args: { connId: string; reason?: string }) => {
+    console.log(`[ble] bleDisconnected ${args.connId} reason="${args.reason ?? ''}"`);
+    bleRxTotals.delete(args.connId);
+    manager.signalBleDisconnect(args.connId, args.reason);
+  });
+  ipcMain.handle('mesh:bleError',           (_e, args: { connId: string; message: string }) => {
+    console.warn(`[ble] bleError ${args.connId}: ${args.message}`);
+    manager.signalBleError(args.connId, args.message);
+  });
   ipcMain.handle('mesh:refresh',            (_e, connId: string) => manager.refresh(connId));
   ipcMain.handle('mesh:broadcastNodeInfo',  (_e, connId: string) => manager.broadcastNodeInfo(connId));
+  ipcMain.handle('mesh:reboot',             (_e, args: { connId: string; seconds?: number }) => {
+    console.log(`[main] reboot → ${args.connId} (${args.seconds ?? 5}s)`);
+    return manager.reboot(args.connId, args.seconds ?? 5);
+  });
   ipcMain.handle('mesh:lastRefreshAt',      (_e, connId: string) => manager.getLastRefreshAt(connId));
   ipcMain.handle('mesh:getAutoConnect',     () => manager.getAutoConnect());
   ipcMain.handle('mesh:setAutoConnect',     (_e, enabled: boolean) => manager.setAutoConnect(enabled));

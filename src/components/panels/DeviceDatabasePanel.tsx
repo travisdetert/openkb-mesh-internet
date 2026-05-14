@@ -1,4 +1,6 @@
 import React, { useMemo, useState } from 'react';
+import { DeviceDiagram } from '../DeviceDiagram';
+import { getDeviceReference, CONNECTOR_LABELS, type DeviceReference, type SetupTip } from '../../lib/device-reference';
 
 interface DeviceSpec {
   hwModel: number;
@@ -102,7 +104,7 @@ interface Props {
 export function DeviceDatabasePanel({ nodes }: Props) {
   const [search, setSearch] = useState('');
   const [filterChip, setFilterChip] = useState<string>('all');
-  const [filterFeature, setFilterFeature] = useState<'all' | 'gps' | 'wifi' | 'screen' | 'in-mesh'>('all');
+  const [filterFeature, setFilterFeature] = useState<'all' | 'recommended' | 'gps' | 'wifi' | 'screen' | 'in-mesh'>('all');
   const [selectedHw, setSelectedHw] = useState<number | null>(null);
 
   // Count how many of each model are in the user's nodeDB.
@@ -117,6 +119,7 @@ export function DeviceDatabasePanel({ nodes }: Props) {
   const filtered = useMemo(() => {
     return CATALOG.filter((d) => {
       if (filterChip !== 'all' && d.chipFamily !== filterChip) return false;
+      if (filterFeature === 'recommended' && !d.recommended) return false;
       if (filterFeature === 'gps' && !d.gps) return false;
       if (filterFeature === 'wifi' && !d.wifi) return false;
       if (filterFeature === 'screen' && d.display === 'none') return false;
@@ -175,6 +178,7 @@ export function DeviceDatabasePanel({ nodes }: Props) {
           </select>
           <select className="text" value={filterFeature} onChange={(e) => setFilterFeature(e.target.value as any)} style={{ width: 180 }}>
             <option value="all">Any features</option>
+            <option value="recommended">★ Recommended</option>
             <option value="gps">Has GPS</option>
             <option value="wifi">Has WiFi</option>
             <option value="screen">Has screen</option>
@@ -283,8 +287,9 @@ export function DeviceDatabasePanel({ nodes }: Props) {
 }
 
 function DeviceDetail({ device, count }: { device: DeviceSpec; count: number }) {
+  const ref = getDeviceReference(device.hwModel);
   return (
-    <div className="card" style={{ position: 'sticky', top: 0, background: 'var(--bg-elev)', zIndex: 1 }}>
+    <div className="card" style={{ position: 'sticky', top: 0, background: 'var(--bg-elev)', zIndex: 1, maxHeight: 'calc(100vh - 40px)', overflowY: 'auto' }}>
       <div style={{ marginBottom: 10 }}>
         <h2 style={{ margin: 0, color: 'var(--accent)' }}>{device.name}</h2>
         <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontFamily: 'var(--mono)', marginTop: 2 }}>
@@ -296,6 +301,15 @@ function DeviceDetail({ device, count }: { device: DeviceSpec; count: number }) 
           </div>
         )}
       </div>
+
+      {ref && (
+        <div style={{ margin: '10px 0 14px' }}>
+          <DeviceDiagram layout={ref.layout} width={320} />
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', textAlign: 'center', marginTop: 2, fontStyle: 'italic' }}>
+            schematic — positions approximate
+          </div>
+        </div>
+      )}
 
       <dl className="kv kv-tight">
         <dt>Chip family</dt><dd>{device.chipFamily}</dd>
@@ -321,12 +335,105 @@ function DeviceDetail({ device, count }: { device: DeviceSpec; count: number }) 
         </div>
       )}
 
+      {ref && <DeviceReferenceTables reference={ref} />}
+
       <div className="info-card" style={{ marginTop: 12 }}>
         <p style={{ margin: 0, fontSize: 12 }}><strong>Antenna upgrade math.</strong></p>
         <p style={{ margin: '6px 0 0', fontSize: 12 }}>
           Going from stock {device.stockAntennaDbi} dBi to a typical $30 5 dBi fiberglass omni = +{(5 - device.stockAntennaDbi).toFixed(1)} dB on TX and another +{(5 - device.stockAntennaDbi).toFixed(1)} dB on RX. That's {Math.pow(10, ((5 - device.stockAntennaDbi) * 2) / 20).toFixed(1)}× the range — for the same battery and TX power.
         </p>
       </div>
+    </div>
+  );
+}
+
+function DeviceReferenceTables({ reference }: { reference: DeviceReference }) {
+  const ref = reference;
+  return (
+    <div style={{ marginTop: 14 }}>
+      {ref.physicalNotes && (
+        <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: '0 0 12px' }}>{ref.physicalNotes}</p>
+      )}
+
+      {/* Buttons */}
+      <h3 style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--text-faint)', margin: '14px 0 6px' }}>
+        Buttons
+      </h3>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {ref.layout.buttons.map((b, i) => (
+          <div key={i} style={{ border: '1px solid rgba(154,163,178,0.18)', borderRadius: 4, padding: '6px 8px' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent)' }}>
+              {b.label}{b.altLabel && <span style={{ color: 'var(--text-faint)', fontWeight: 400, marginLeft: 6 }}>({b.altLabel})</span>}
+            </div>
+            <ul style={{ margin: '4px 0 0', paddingLeft: 16, fontSize: 12 }}>
+              {b.actions.map((a, j) => (
+                <li key={j}>
+                  <span style={{ fontFamily: 'var(--mono)', color: 'var(--text-dim)' }}>{a.trigger}</span>
+                  {' — '}{a.effect}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+
+      {/* Ports */}
+      <h3 style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--text-faint)', margin: '14px 0 6px' }}>
+        Ports
+      </h3>
+      <table className="data" style={{ fontSize: 12, width: '100%' }}>
+        <thead>
+          <tr><th>Label</th><th>Connector</th><th>Edge</th></tr>
+        </thead>
+        <tbody>
+          {ref.layout.ports.map((p, i) => (
+            <tr key={i}>
+              <td style={{ color: 'var(--accent)', fontWeight: 600 }}>{p.label}</td>
+              <td style={{ fontSize: 11, fontFamily: 'var(--mono)' }}>{CONNECTOR_LABELS[p.connector]}</td>
+              <td style={{ fontSize: 11, color: 'var(--text-faint)' }}>{p.edge}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ marginTop: 6 }}>
+        {ref.layout.ports.filter((p) => p.notes).map((p, i) => (
+          <div key={i} style={{ fontSize: 11.5, marginTop: 4, color: 'var(--text-dim)' }}>
+            <strong style={{ color: 'var(--accent)' }}>{p.label}</strong> — {p.notes}
+          </div>
+        ))}
+      </div>
+
+      {/* Setup tips */}
+      {ref.setupTips.length > 0 && (
+        <>
+          <h3 style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--text-faint)', margin: '14px 0 6px' }}>
+            First-time setup
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {ref.setupTips.map((tip, i) => <SetupTipCard key={i} tip={tip} />)}
+          </div>
+        </>
+      )}
+
+      {/* Bootloader */}
+      <h3 style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--text-faint)', margin: '14px 0 6px' }}>
+        Enter bootloader / DFU
+      </h3>
+      <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: 0 }}>{ref.bootloaderInstructions}</p>
+    </div>
+  );
+}
+
+function SetupTipCard({ tip }: { tip: SetupTip }) {
+  const tone = tip.tone ?? 'info';
+  const borderColor = tone === 'bad' ? 'var(--bad)' : tone === 'warn' ? 'var(--warn)' : 'var(--accent)';
+  const icon = tone === 'bad' ? '⚠' : tone === 'warn' ? '!' : 'ℹ';
+  return (
+    <div style={{ borderLeft: `3px solid ${borderColor}`, paddingLeft: 8, fontSize: 12 }}>
+      <div style={{ fontWeight: 600, color: borderColor }}>
+        <span style={{ marginRight: 6 }}>{icon}</span>{tip.title}
+      </div>
+      <p style={{ margin: '2px 0 0', color: 'var(--text-dim)' }}>{tip.body}</p>
     </div>
   );
 }

@@ -77,11 +77,12 @@ export function ConnectionWizard({
   packetsLast60s,
   go,
 }: Props) {
-  const { connections, activeConnId, setActiveConnId } = useMeshContext();
+  const { connections, activeConnId, setActiveConnId, pendingReboots, markRebootStarted } = useMeshContext();
   const [ports, setPorts] = useState<PortInfo[]>([]);
   const [selected, setSelected] = useState<string>('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string>('');
+  const [bleStatus, setBleStatus] = useState<string>('');
   const [attempted, setAttempted] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -137,6 +138,56 @@ export function ConnectionWizard({
     finally { setBusy(false); }
   };
 
+  const connectBluetooth = async () => {
+    setBusy(true);
+    setErr('');
+    setBleStatus('Requesting Bluetooth permission…');
+    setAttempted(true);
+    try {
+      const { connectBluetoothDevice } = await import('../lib/ble-client');
+      const id = await connectBluetoothDevice((p) => {
+        // Translate the structured progress phase into a single human line.
+        const dev = p.deviceName ? ` "${p.deviceName}"` : '';
+        switch (p.phase) {
+          case 'requesting-device':   setBleStatus(`Scanning for radios…${dev}`); break;
+          case 'device-picked':       setBleStatus(`Found${dev} — connecting GATT…`); break;
+          case 'gatt-connecting':     setBleStatus(`Connecting GATT to${dev}…`); break;
+          case 'service-discovery':   setBleStatus(`Looking up Meshtastic service on${dev}…`); break;
+          case 'characteristics':     setBleStatus(`Reading characteristics from${dev}…`); break;
+          case 'subscribing':         setBleStatus(`Subscribing to notifications on${dev}…`); break;
+          case 'session-registered':  setBleStatus(`Session opened (${p.connId}) — waiting for first frames…`); break;
+          case 'draining-initial':    setBleStatus(`Pulling initial config from${dev}…`); break;
+          case 'connected':           setBleStatus(`Connected${dev} — got ${p.framesDrained ?? 0} initial frame${p.framesDrained === 1 ? '' : 's'}. Handshake continues in background.`); break;
+          case 'failed':              setBleStatus(`Failed: ${p.error ?? 'unknown'}`); break;
+        }
+      });
+      setActiveConnId(id);
+      setAdding(false);
+      // Clear the status after a moment so it doesn't linger.
+      setTimeout(() => setBleStatus(''), 4000);
+    } catch (e: any) {
+      // In our auto-pick flow we don't show an OS chooser, so NotFoundError
+      // here means the main-process scan timed out without seeing any
+      // Meshtastic-advertising device — not a user cancel. Surface a
+      // useful diagnosis pointing at the most common causes.
+      const msg = e?.message ?? String(e);
+      if (e?.name === 'NotFoundError' || /User cancelled/i.test(msg)) {
+        setErr(
+          'No Meshtastic radio advertising over Bluetooth was found in 15 seconds. Common causes:\n' +
+          '• The radio has BLE disabled — check the "BLE off" badge on its connection chip above.\n' +
+          '• Another client (the official Meshtastic phone app on this or a nearby device) is already paired — disconnect it first.\n' +
+          '• Some firmware suppresses BLE advertising while a USB host is active; try unplugging USB and scanning again.\n' +
+          '• The radio is out of range or powered off.'
+        );
+        setBleStatus('');
+      } else {
+        setErr(`Bluetooth: ${msg}`);
+        setBleStatus('');
+      }
+    }
+    finally { setBusy(false); }
+  };
+
   const disconnect = async () => {
     if (!activeConnId) return;
     setBusy(true);
@@ -158,7 +209,9 @@ export function ConnectionWizard({
     <div className="page">
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
         <h1 className="page-title">
-          {connections.length <= 1 ? 'Connect to your node' : `Connected radios (${connections.length})`}
+          {adding ? 'Add another radio'
+            : connections.length <= 1 ? 'Connect to your node'
+            : `Connected radios (${connections.length})`}
         </h1>
         <label className={'autoconnect-toggle' + (autoConnect ? ' on' : '')} title="When enabled, any USB device the app recognises as a Meshtastic board (confirmed VID/PID match) is opened automatically. Generic USB-serial devices are never auto-connected.">
           <input type="checkbox" checked={autoConnect} onChange={(e) => setAutoConnectLocal(e.target.checked)} />
@@ -174,15 +227,33 @@ export function ConnectionWizard({
             const cMy = c.state.myInfo?.myNodeNum;
             const cNode = cMy ? c.nodes.find((n) => n.num === cMy) : undefined;
             const label = cNode?.shortName || cNode?.longName || c.portPath?.split('/').pop() || c.connId;
-            const dot =
-              c.state.status === 'ready' ? 'ok'
+            // If this chip's radio is mid-reboot, override the status display
+            // with a "Rebooting in Ns…" countdown derived from the 5-second
+            // grace window the firmware honors before actually restarting.
+            const rebootEntry = cMy ? pendingReboots[String(cMy)] : undefined;
+            const rebootElapsed = rebootEntry ? Math.floor((Date.now() - rebootEntry.startedAt) / 1000) : 0;
+            const rebootRemaining = rebootEntry ? Math.max(0, 5 - rebootElapsed) : 0;
+            const isRebooting = !!rebootEntry && rebootElapsed < 6;
+            const dot = isRebooting ? 'warn'
+              : c.state.status === 'ready' ? 'ok'
               : c.state.status === 'disconnected' ? 'bad'
               : 'warn';
-            const sub =
-              c.state.status === 'ready' ? `${c.nodes.length} nodes`
+            const sub = isRebooting
+              ? (rebootRemaining > 0 ? `↻ rebooting in ${rebootRemaining}s…` : '↻ rebooting now…')
+              : c.state.status === 'ready' ? `${c.nodes.length} nodes`
               : c.state.status === 'configuring' ? 'syncing'
               : c.state.status === 'connecting' ? 'opening'
               : 'offline';
+            // BLE indicator: the radio's own BluetoothConfig (synced over USB).
+            // Tells you at a glance whether THIS radio thinks its BLE is on —
+            // critical for explaining "why isn't it showing up in the scan?"
+            const btCfg = c.state.bluetoothConfig;
+            const hasBtCapability = c.state.myInfo?.hasBluetooth ?? true;
+            const btBadge =
+              !hasBtCapability ? { text: 'no BT', tone: 'dim' as const, tip: 'Hardware has no Bluetooth radio.' }
+              : !btCfg ? null  // config not synced yet — don't claim either way
+              : !btCfg.enabled ? { text: 'BLE off', tone: 'bad' as const, tip: 'This radio reports its Bluetooth is disabled in firmware config. Enable it under Settings → Bluetooth (or via the official Meshtastic app) before BLE scans will find it.' }
+              : { text: 'BLE on', tone: 'good' as const, tip: btCfg.mode === 0 ? 'BLE enabled (random PIN — radio shows pairing code on its screen).' : btCfg.mode === 1 ? 'BLE enabled (no PIN required).' : btCfg.mode === 2 ? `BLE enabled (fixed PIN: ${btCfg.fixedPin}).` : `BLE enabled (mode ${btCfg.mode}).` };
             return (
               <div
                 key={c.connId}
@@ -193,7 +264,35 @@ export function ConnectionWizard({
               >
                 <span className={`status-dot ${dot}`} />
                 <div className="conn-chip-text">
-                  <div className="conn-chip-label">{label}</div>
+                  <div className="conn-chip-label">
+                    {label}
+                    {btBadge && (
+                      <span
+                        title={btBadge.tip}
+                        style={{
+                          marginLeft: 8,
+                          fontSize: 10,
+                          padding: '1px 6px',
+                          borderRadius: 8,
+                          fontFamily: 'var(--mono)',
+                          color:
+                            btBadge.tone === 'good' ? 'var(--good)'
+                            : btBadge.tone === 'bad' ? 'var(--bad)'
+                            : 'var(--text-faint)',
+                          border:
+                            btBadge.tone === 'good' ? '1px solid rgba(102,211,154,0.4)'
+                            : btBadge.tone === 'bad' ? '1px solid rgba(255,107,129,0.4)'
+                            : '1px solid rgba(154,163,178,0.3)',
+                          background:
+                            btBadge.tone === 'good' ? 'rgba(102,211,154,0.10)'
+                            : btBadge.tone === 'bad' ? 'rgba(255,107,129,0.10)'
+                            : 'rgba(154,163,178,0.08)',
+                        }}
+                      >
+                        {btBadge.text}
+                      </span>
+                    )}
+                  </div>
                   <div className="conn-chip-sub">
                     {c.portPath?.split('/').pop()} · {sub}
                   </div>
@@ -208,6 +307,34 @@ export function ConnectionWizard({
               </div>
             );
           })}
+          {/* Placeholder chips for radios that are mid-reboot AND have
+            *  already disconnected from USB. They reappear as live chips
+            *  the moment auto-connect picks the radio back up. */}
+          {(() => {
+            const liveNodeNums = new Set(
+              connections.map((c) => c.state.myInfo?.myNodeNum).filter((n) => !!n) as number[],
+            );
+            return Object.entries(pendingReboots)
+              .filter(([k]) => !liveNodeNums.has(parseInt(k, 10)))
+              .map(([k, entry]) => {
+                const elapsed = Math.floor((Date.now() - entry.startedAt) / 1000);
+                const label = entry.shortName || entry.longName || entry.portPath?.split('/').pop() || `!${parseInt(k, 10).toString(16).padStart(8, '0')}`;
+                return (
+                  <div
+                    key={`reboot-${k}`}
+                    className="conn-chip"
+                    style={{ opacity: 0.75, borderStyle: 'dashed' }}
+                    title="Radio is rebooting. Auto-connect will reattach when it re-enumerates."
+                  >
+                    <span className="status-dot warn" />
+                    <div className="conn-chip-text">
+                      <div className="conn-chip-label">{label}</div>
+                      <div className="conn-chip-sub">↻ restarting · {elapsed}s</div>
+                    </div>
+                  </div>
+                );
+              });
+          })()}
           {!adding && (
             <button className="conn-chip-add" onClick={() => { setAdding(true); refresh(); }}>
               + Add another radio
@@ -216,27 +343,31 @@ export function ConnectionWizard({
         </div>
       )}
 
-      {/* Top dashboard strip — single row, scannable at a glance */}
-      <div className="conn-strip">
-        <div className="conn-strip-stages">
-          {STAGES.map((s, i) => {
-            const status = i < idx ? 'done' : i === idx ? 'active' : 'pending';
-            return <StageChip key={s.key} stage={s} status={status} />;
-          })}
+      {/* Top dashboard strip — single row, scannable at a glance. Hidden in
+       *  "add another radio" mode because these stats describe whichever
+       *  radio is currently active, not the one being added. */}
+      {!adding && (
+        <div className="conn-strip">
+          <div className="conn-strip-stages">
+            {STAGES.map((s, i) => {
+              const status = i < idx ? 'done' : i === idx ? 'active' : 'pending';
+              return <StageChip key={s.key} stage={s} status={status} />;
+            })}
+          </div>
+          <div className="conn-strip-stats">
+            {isReady && timeToReady && <Stat label="ready in" value={`${timeToReady}s`} />}
+            {state.status === 'configuring' && <Stat label="syncing" value={`${elapsed}s`} tone="warn" />}
+            <Stat
+              label="last packet"
+              value={lastPacketAt ? ago(lastPacketAt) : '—'}
+              tone={!lastPacketAt ? 'dim' : Date.now() - lastPacketAt < 60_000 ? 'good' : Date.now() - lastPacketAt < 300_000 ? 'warn' : 'bad'}
+            />
+            <Stat label="pkt / min" value={String(packetsLast60s)} tone={packetsLast60s > 0 ? 'good' : 'dim'} />
+            <Stat label="nodes" value={String(nodesCount)} />
+            <Stat label="channels" value={String(channelsCount)} />
+          </div>
         </div>
-        <div className="conn-strip-stats">
-          {isReady && timeToReady && <Stat label="ready in" value={`${timeToReady}s`} />}
-          {state.status === 'configuring' && <Stat label="syncing" value={`${elapsed}s`} tone="warn" />}
-          <Stat
-            label="last packet"
-            value={lastPacketAt ? ago(lastPacketAt) : '—'}
-            tone={!lastPacketAt ? 'dim' : Date.now() - lastPacketAt < 60_000 ? 'good' : Date.now() - lastPacketAt < 300_000 ? 'warn' : 'bad'}
-          />
-          <Stat label="pkt / min" value={String(packetsLast60s)} tone={packetsLast60s > 0 ? 'good' : 'dim'} />
-          <Stat label="nodes" value={String(nodesCount)} />
-          <Stat label="channels" value={String(channelsCount)} />
-        </div>
-      </div>
+      )}
 
       {/* Port picker — shown when not connected at all, or when explicitly adding another radio */}
       {(!isConnected || adding) ? (
@@ -259,6 +390,14 @@ export function ConnectionWizard({
             <button className="primary" disabled={busy || !selected} onClick={connect}>
               {busy ? 'Connecting…' : 'Connect'}
             </button>
+            <button
+              className="ghost"
+              disabled={busy}
+              onClick={connectBluetooth}
+              title="Pair with a Meshtastic radio over Bluetooth LE. Requires the radio to have BT enabled (it is by default)."
+            >
+              {busy ? '…' : 'Bluetooth…'}
+            </button>
             {adding && (
               <button className="ghost" onClick={() => { setAdding(false); setErr(''); }}>Cancel</button>
             )}
@@ -280,6 +419,23 @@ export function ConnectionWizard({
               <p style={{ margin: 0, fontSize: 12 }}>
                 All detected ports are already connected to a radio. Plug in another USB device and click <em>Rescan</em>.
               </p>
+            </div>
+          )}
+          {bleStatus && (
+            <div
+              style={{
+                marginTop: 8,
+                padding: '8px 10px',
+                borderRadius: 4,
+                borderLeft: '3px solid var(--accent)',
+                background: 'rgba(92,200,255,0.06)',
+                fontSize: 12.5,
+                color: 'var(--text)',
+                fontFamily: 'var(--mono)',
+              }}
+            >
+              <span style={{ color: 'var(--accent)', fontWeight: 600, marginRight: 6 }}>📶 BLE</span>
+              {bleStatus}
             </div>
           )}
           {err && <ConnectError message={err} />}
@@ -308,6 +464,11 @@ export function ConnectionWizard({
         </div>
       )}
 
+      {/* Everything below describes the currently-active radio. In
+       *  "add another radio" mode the user is focused on picking a NEW
+       *  device — collapse all of this so the wizard is its own focused
+       *  screen instead of stacking on top of an in-progress radio view. */}
+      {!adding && <>
       {/* Configure this radio — quick links into per-device panels. These
        *  used to live in the sidebar but they're really about whatever
        *  radio is currently active, so they belong with the device view. */}
@@ -322,6 +483,30 @@ export function ConnectionWizard({
           </button>
           <button className="conn-config-btn" onClick={() => go('mqtt')} title="MQTT bridge, map reporting">
             <span className="conn-config-icon">☁</span> MQTT
+          </button>
+          <button
+            className="conn-config-btn"
+            onClick={async () => {
+              if (!activeConnId || !isReady) return;
+              const myNum = state.myInfo?.myNodeNum;
+              const label = myNode?.shortName || myNode?.longName || state.portPath || 'this radio';
+              if (!confirm(`Reboot ${label}?\n\nThe radio will disconnect for ~10–15 seconds while it restarts. Auto-connect will pick it back up when it returns.`)) return;
+              const ok = await window.mesh.reboot({ connId: activeConnId, seconds: 5 });
+              if (!ok) { alert('Could not send reboot — radio handshake may not be complete yet.'); return; }
+              if (myNum) {
+                markRebootStarted(myNum, {
+                  shortName: myNode?.shortName ?? '',
+                  longName: myNode?.longName ?? '',
+                  portPath: state.portPath,
+                });
+              }
+            }}
+            disabled={!isReady}
+            title={isReady
+              ? 'Send a reboot admin message. The radio drops for ~10–15s then re-enumerates.'
+              : 'Wait for the radio to finish syncing before rebooting.'}
+          >
+            <span className="conn-config-icon">↻</span> Reboot
           </button>
         </div>
       )}
@@ -472,6 +657,8 @@ export function ConnectionWizard({
           )}
         </div>
       )}
+
+      </>}
 
       {/* Static help collapses when connected — disconnected users still see it inline */}
       {!isConnected ? (
@@ -673,7 +860,7 @@ function ConnectError({ message }: { message: string }) {
       role="alert"
     >
       <p style={{ margin: '0 0 6px', color: 'var(--bad)', fontWeight: 600 }}>{title}</p>
-      <p style={{ margin: '0 0 8px', fontSize: 12.5, color: 'var(--text-dim)' }}>{message}</p>
+      <p style={{ margin: '0 0 8px', fontSize: 12.5, color: 'var(--text-dim)', whiteSpace: 'pre-line' }}>{message}</p>
       {cmd && (
         <div style={{ display: 'flex', gap: 6, alignItems: 'stretch' }}>
           <code

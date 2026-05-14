@@ -15,9 +15,12 @@ declare global {
 
   interface MyInfo {
     myNodeNum: number;
-    firmwareVersion: string;
-    hasWifi: boolean;
-    hasBluetooth: boolean;
+    /** Backfilled from DeviceMetadata; absent until that frame arrives. */
+    firmwareVersion?: string;
+    /** Backfilled from DeviceMetadata; treat `undefined` as "unknown,
+     *  assume yes" — UI sites use `?? true` so panels stay enabled. */
+    hasWifi?: boolean;
+    hasBluetooth?: boolean;
     maxChannels: number;
   }
 
@@ -360,6 +363,19 @@ declare global {
     /** Broadcast our NodeInfo with wantResponse=true to nudge peers to reply
      *  with theirs. Returns false if the radio hasn't finished its handshake. */
     broadcastNodeInfo:  (connId: string) => Promise<boolean>;
+    /** Ask the radio to reboot in N seconds (default 5). Returns false if
+     *  the radio isn't ready. Connection will drop and (if auto-connect is
+     *  on) come back on its own once the device re-enumerates. */
+    reboot:             (args: { connId: string; seconds?: number }) => Promise<boolean>;
+    /** Open a renderer-owned BLE session and register it with the manager.
+     *  Returns the connId to pair with subsequent bleRxFrame calls. */
+    bleStartSession:    (deviceName: string) => Promise<string>;
+    /** Push a decoded FromRadio frame (base64) into the matching controller. */
+    bleRxFrame:         (args: { connId: string; bytes: string }) => Promise<void>;
+    /** Signal that the renderer's GATT link has dropped. */
+    bleDisconnected:    (args: { connId: string; reason?: string }) => Promise<void>;
+    /** Signal a GATT-side error so the controller can surface it. */
+    bleError:           (args: { connId: string; message: string }) => Promise<void>;
     /** Auto-connect to confirmed Meshtastic USB devices as they appear. */
     getAutoConnect:     () => Promise<boolean>;
     setAutoConnect:     (enabled: boolean) => Promise<void>;
@@ -382,10 +398,12 @@ declare global {
     onTracerouteSent: (cb: (p: { connId: string; trace: TracerouteSent }) => void) => () => void;
     onTracerouteResponse: (cb: (p: { connId: string; response: TracerouteResponse }) => void) => () => void;
     onTraceUpdate: (cb: (p: { connId: string; trace: PacketTrace }) => void) => () => void;
-    onConnectionAdded: (cb: (p: { connId: string; portPath: string }) => void) => () => void;
+    onConnectionAdded: (cb: (p: { connId: string; portPath: string; transport?: 'serial' | 'ble' | 'tcp' }) => void) => () => void;
     onConnectionRemoved: (cb: (p: { connId: string }) => void) => () => void;
     onSerialRaw: (cb: (p: { connId: string; direction: 'rx' | 'tx'; at: number; bytes: string }) => void) => () => void;
     onSerialEvent: (cb: (p: { connId: string; event: SerialEvent }) => void) => () => void;
+    onBleTxFrame: (cb: (p: { connId: string; bytes: string }) => void) => () => void;
+    onBleDisconnectRequest: (cb: (p: { connId: string }) => void) => () => void;
   }
 
   type ResetProfile = 'esp32' | 'esp32-bootloader' | 'nrf52-dfu' | 'rp2040-bootsel';

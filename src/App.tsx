@@ -45,7 +45,7 @@ import { ExpectationPanel } from './components/ExpectationPanel';
 import { ComparePanel } from './components/ComparePanel';
 import { EventFeedPanel } from './components/EventFeedPanel';
 import { useMesh } from './hooks/useMesh';
-import { MeshContext } from './hooks/MeshContext';
+import { MeshContext, type RebootEntry } from './hooks/MeshContext';
 import { Onboarding, hasCompletedOnboarding } from './components/Onboarding';
 import {
   summarizeCompareRadios,
@@ -74,6 +74,70 @@ export function App() {
   useEffect(() => {
     try { localStorage.setItem(LAST_TAB_KEY, tab); } catch { /* ignore */ }
   }, [tab]);
+
+  // Wire up the renderer↔main BLE bridge once. Idempotent; safe to call
+  // before any actual Bluetooth pairing has happened.
+  useEffect(() => {
+    void import('./lib/ble-client').then(({ initBleBridge }) => initBleBridge());
+  }, []);
+
+  // Reboot lifecycle tracking — kept at the App level (instead of in any
+  // individual panel) so every consumer that wants to surface a "rebooting…"
+  // state (the Connect wizard chips AND the sidebar) sees the same truth.
+  const [pendingReboots, setPendingReboots] = useState<Record<string, RebootEntry>>({});
+  const markRebootStarted = (myNodeNum: number, info: { shortName: string; longName: string; portPath?: string }) => {
+    setPendingReboots((prev) => ({
+      ...prev,
+      [String(myNodeNum)]: { startedAt: Date.now(), ...info },
+    }));
+  };
+
+  // Force a re-render every second while we have pending reboots so the
+  // "rebooting in Ns" / "restarting · Ns" labels stay live. Cheap — only
+  // runs while a reboot is in flight.
+  const [, tickRebootClock] = useState(0);
+  useEffect(() => {
+    if (Object.keys(pendingReboots).length === 0) return;
+    const id = setInterval(() => tickRebootClock((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [pendingReboots]);
+
+  // GC entries that have been pending too long — protects against a failed
+  // reboot leaving a "Restarting…" placeholder stuck on screen forever.
+  useEffect(() => {
+    const id = setInterval(() => {
+      setPendingReboots((prev) => {
+        const now = Date.now();
+        let changed = false;
+        const next: Record<string, RebootEntry> = {};
+        for (const [k, v] of Object.entries(prev)) {
+          if (now - v.startedAt > 60_000) { changed = true; continue; }
+          next[k] = v;
+        }
+        return changed ? next : prev;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // When a live connection appears whose myNodeNum matches a pending entry,
+  // drop the entry — the radio has come back.
+  useEffect(() => {
+    const liveNodeNums = new Set(
+      mesh.connections.map((c) => c.state.myInfo?.myNodeNum).filter((n) => !!n) as number[],
+    );
+    setPendingReboots((prev) => {
+      let changed = false;
+      const next: Record<string, RebootEntry> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        const num = parseInt(k, 10);
+        const justQueued = Date.now() - v.startedAt < 6_000;
+        if (justQueued || !liveNodeNums.has(num)) next[k] = v;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [mesh.connections]);
 
   // First-ready-of-the-session restore. We only fire this once per launch
   // and only if the user hasn't already navigated away from Home — manual
@@ -195,6 +259,8 @@ export function App() {
         connections: mesh.connections,
         activeConnId: mesh.activeConnId,
         setActiveConnId: mesh.setActiveConnId,
+        pendingReboots,
+        markRebootStarted,
       }}
     >
     {showOnboarding && (

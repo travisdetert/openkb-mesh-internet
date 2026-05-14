@@ -16,12 +16,7 @@ const TILE_SIZE = 256;
 const SVG_W = 1200;
 const SVG_H = 700;
 
-function nodeIdHex(num: number): string { return '!' + (num >>> 0).toString(16).padStart(8, '0'); }
-function shortHex(num: number): string { return '!' + (num >>> 0).toString(16).padStart(8, '0').slice(-4); }
-function nameFor(nodes: NodeRecord[], num: number): string {
-  const n = nodes.find((x) => x.num === num);
-  return n?.shortName || shortHex(num);
-}
+import { nodeIdHex, nodeShortHex as shortHex, nodeDisplayName as nameFor } from '../../lib/node-identity';
 function colorForNode(num: number): string {
   const hue = ((num >>> 0) * 137.508) % 360;
   return `hsl(${hue}, 65%, 65%)`;

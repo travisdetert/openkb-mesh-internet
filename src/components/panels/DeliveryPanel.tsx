@@ -1,23 +1,16 @@
 import React, { useMemo, useState } from 'react';
 import { PanelChannelHeader } from '../PanelChannelHeader';
+import { nodeIdHex as fullHex, nodeDisplayName, nodeLongName } from '../../lib/node-identity';
 
 const BROADCAST = 0xffffffff;
 
-function shortHex(num: number): string {
-  return '!' + (num >>> 0).toString(16).padStart(8, '0').slice(-4);
-}
-function fullHex(num: number): string {
-  return '!' + (num >>> 0).toString(16).padStart(8, '0');
-}
 function nameFor(nodes: NodeRecord[], num: number): string {
   if (num === BROADCAST) return 'broadcast';
-  const n = nodes.find((x) => x.num === num);
-  return n?.shortName || shortHex(num);
+  return nodeDisplayName(nodes, num);
 }
 function longNameFor(nodes: NodeRecord[], num: number): string {
   if (num === BROADCAST) return 'broadcast';
-  const n = nodes.find((x) => x.num === num);
-  return n?.longName || n?.shortName || shortHex(num);
+  return nodeLongName(nodes, num);
 }
 
 function fmtMs(ms: number): string {

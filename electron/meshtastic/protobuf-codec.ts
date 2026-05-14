@@ -139,9 +139,15 @@ export interface MQTTConfigMsg {
 
 export interface MyInfo {
   myNodeNum: number;
-  firmwareVersion: string;
-  hasWifi: boolean;
-  hasBluetooth: boolean;
+  /** Optional — firmware version isn't on the MyInfo proto; it lives on
+   *  DeviceMetadata and gets backfilled by the controller. */
+  firmwareVersion?: string;
+  /** Optional for the same reason as firmwareVersion. Treat `undefined` as
+   *  "unknown" rather than "no" — most UI sites use `?? true` for a
+   *  permissive default so panels don't get disabled before metadata
+   *  arrives. */
+  hasWifi?: boolean;
+  hasBluetooth?: boolean;
   maxChannels: number;
 }
 
@@ -295,11 +301,13 @@ export function decodeFromRadio(bytes: Uint8Array): FromRadioMessage {
     case 'myInfo': {
       const m = variant.value;
       out.type = 'my_info';
+      // MyInfo at the proto level only carries my_node_num and
+      // (sometimes) max_channels. firmwareVersion / hasWifi / hasBluetooth
+      // come from DeviceMetadata — leave them undefined here so the
+      // controller's metadata merge doesn't get overwritten by stale
+      // false-y placeholders when frames arrive in an unexpected order.
       out.myInfo = {
         myNodeNum: m.myNodeNum,
-        firmwareVersion: '',
-        hasWifi: false,
-        hasBluetooth: false,
         maxChannels: 8,
       };
       break;
@@ -365,14 +373,9 @@ export function decodeFromRadio(bytes: Uint8Array): FromRadioMessage {
         hwModel: typeof md.hwModel === 'number' ? md.hwModel : 0,
         role: typeof md.role === 'number' ? md.role : 0,
       };
-      // Backfill MyInfo-style fields if the controller asks for them later.
-      out.myInfo = {
-        myNodeNum: 0,
-        firmwareVersion: out.metadata.firmwareVersion,
-        hasWifi: out.metadata.hasWifi,
-        hasBluetooth: out.metadata.hasBluetooth,
-        maxChannels: 8,
-      };
+      // Don't emit a myInfo here — the controller's 'metadata' case
+      // merges these fields into the existing myInfo so we don't blow
+      // away the myNodeNum that arrived in the my_info frame.
       break;
     }
     default:
@@ -1083,6 +1086,37 @@ export function decodeChannelSetUrl(url: string): { channels: Array<{ name: stri
   }));
   const lora = decoded.loraConfig ? mapLoRaConfig(decoded.loraConfig) : undefined;
   return { channels, lora };
+}
+
+/**
+ * Schedule a device reboot via the admin port. `seconds` = how long the
+ * firmware should wait before rebooting (5–10s is a friendly default —
+ * gives the radio time to flush any pending traffic and the host time to
+ * see acks land). Pass a negative number to cancel a pending reboot.
+ *
+ * `to` MUST be the radio's own node number; admin messages are addressed
+ * to the local node.
+ */
+export function encodeToRadio_Reboot(to: number, seconds: number): Uint8Array {
+  ensureReady();
+  const admin = create!(Proto.Admin.AdminMessageSchema, {
+    payloadVariant: { case: 'rebootSeconds', value: seconds },
+  });
+  const data = create!(Proto.Mesh.DataSchema, {
+    portnum: PORTNUM_ADMIN,
+    payload: toBinary!(Proto.Admin.AdminMessageSchema, admin),
+    wantResponse: false,
+  });
+  const packet = create!(Proto.Mesh.MeshPacketSchema, {
+    to,
+    wantAck: false,
+    id: (Math.random() * 0xffffffff) >>> 0,
+    payloadVariant: { case: 'decoded', value: data },
+  });
+  const msg = create!(Proto.Mesh.ToRadioSchema, {
+    payloadVariant: { case: 'packet', value: packet },
+  });
+  return toBinary!(Proto.Mesh.ToRadioSchema, msg);
 }
 
 export function encodeToRadio_SetOwner(to: number, args: { longName: string; shortName: string; }): Uint8Array {

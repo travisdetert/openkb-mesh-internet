@@ -1,13 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { useActiveConnId } from '../../hooks/MeshContext';
 import { PanelChannelHeader } from '../PanelChannelHeader';
+import { nodeIdHex } from '../../lib/node-identity';
 
 const STALE_S = 24 * 3600;
 const AGING_S = 3600;
-
-function nodeIdHex(num: number): string {
-  return '!' + (num >>> 0).toString(16).padStart(8, '0');
-}
 
 function ago(secs?: number): string {
   if (!secs) return '—';
@@ -48,6 +45,106 @@ const ROLE_NAMES: Record<number, string> = {
   8: 'CLIENT_HIDDEN', 9: 'LOST_AND_FOUND', 10: 'TAK_TRACKER',
 };
 
+type SortKey =
+  | 'smart'
+  | 'shortName'
+  | 'longName'
+  | 'num'
+  | 'hwModelName'
+  | 'viaMqtt'
+  | 'hopsAway'
+  | 'snr'
+  | 'rssi'
+  | 'batteryLevel'
+  | 'lastHeard';
+type SortDir = 'asc' | 'desc';
+
+/**
+ * "Smart" default sort. Puts the most actionable rows at the top:
+ *   1. Me (the radio you're connected to)
+ *   2. Freshness tier — fresh / aging / stale / never
+ *   3. RF before MQTT (your local neighbours before internet relays)
+ *   4. Hops ascending (closer in the routing graph = higher priority)
+ *   5. Recency
+ */
+function freshnessRank(secs?: number): number {
+  if (!secs) return 3; // never heard
+  const d = Math.floor(Date.now() / 1000) - secs;
+  if (d < AGING_S) return 0;
+  if (d < STALE_S) return 1;
+  return 2;
+}
+
+function smartCompare(a: NodeRecord, b: NodeRecord, myNum?: number): number {
+  if (myNum !== undefined) {
+    if (a.num === myNum) return -1;
+    if (b.num === myNum) return 1;
+  }
+  const fa = freshnessRank(a.lastHeard);
+  const fb = freshnessRank(b.lastHeard);
+  if (fa !== fb) return fa - fb;
+  const sa = a.viaMqtt ? 1 : 0;
+  const sb = b.viaMqtt ? 1 : 0;
+  if (sa !== sb) return sa - sb;
+  const ha = a.hopsAway ?? 99;
+  const hb = b.hopsAway ?? 99;
+  if (ha !== hb) return ha - hb;
+  return (b.lastHeard ?? 0) - (a.lastHeard ?? 0);
+}
+
+/**
+ * Column-by-column comparator. Nulls/missing values always sort to the
+ * END of the list regardless of direction — otherwise asc-sort by SNR
+ * puts every node-we-have-no-SNR-for at the top, which is useless. The
+ * `dir` only flips the relative order of rows that have a real value.
+ */
+function compareByKey(a: NodeRecord, b: NodeRecord, key: SortKey, dir: SortDir, myNum?: number): number {
+  if (key === 'smart') return smartCompare(a, b, myNum);
+
+  const av = sortFieldOf(a, key);
+  const bv = sortFieldOf(b, key);
+  const aMissing = av === null;
+  const bMissing = bv === null;
+  if (aMissing && bMissing) return (a.shortName || '').localeCompare(b.shortName || '');
+  if (aMissing) return 1;
+  if (bMissing) return -1;
+
+  let cmp: number;
+  if (typeof av === 'string') cmp = av.localeCompare(bv as string);
+  else cmp = (av as number) - (bv as number);
+  return dir === 'asc' ? cmp : -cmp;
+}
+
+function sortFieldOf(n: NodeRecord, key: SortKey): string | number | null {
+  switch (key) {
+    case 'shortName':    return n.shortName || null;
+    case 'longName':     return n.longName || null;
+    case 'num':          return n.num;
+    case 'hwModelName':  return n.hwModelName || null;
+    case 'viaMqtt':      return n.viaMqtt ? 1 : 0;
+    case 'hopsAway':     return n.hopsAway ?? null;
+    case 'snr':          return n.snr ?? null;
+    case 'rssi':         return n.rssi ?? null;
+    case 'batteryLevel': return n.batteryLevel ?? null;
+    case 'lastHeard':    return n.lastHeard ?? null;
+    default:             return null;
+  }
+}
+
+/** Default sort direction for a column when first clicked. Higher-is-better
+ *  fields default to desc; identity/categorical fields default to asc. */
+function defaultDirFor(key: SortKey): SortDir {
+  switch (key) {
+    case 'snr':
+    case 'rssi':
+    case 'batteryLevel':
+    case 'lastHeard':
+      return 'desc';
+    default:
+      return 'asc';
+  }
+}
+
 function precisionMeters(bits?: number): number | undefined {
   if (!bits || bits >= 32) return undefined;
   return (360 / Math.pow(2, bits)) * 111000;
@@ -81,11 +178,34 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
 
   const [selectedNum, setSelectedNum] = useState<number | null>(null);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
-  const filteredNodes = nodes.filter((n) => {
-    if (sourceFilter === 'rf') return !n.viaMqtt;
-    if (sourceFilter === 'mqtt') return !!n.viaMqtt;
-    return true;
-  });
+  const [sortKey, setSortKey] = useState<SortKey>('smart');
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
+
+  const filteredNodes = nodes
+    .filter((n) => {
+      if (sourceFilter === 'rf') return !n.viaMqtt;
+      if (sourceFilter === 'mqtt') return !!n.viaMqtt;
+      return true;
+    })
+    .slice()
+    .sort((a, b) => compareByKey(a, b, sortKey, sortDir, state.myInfo?.myNodeNum));
+
+  const onHeaderClick = (key: SortKey) => () => {
+    if (sortKey === key) {
+      // Same column: toggle direction, but if you're on the smart default
+      // and click anything, switch to that column at its natural default.
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDir(defaultDirFor(key));
+    }
+  };
+
+  const sortInd = (key: SortKey) => {
+    if (sortKey !== key) return null;
+    return <span className="sort-ind">{sortDir === 'asc' ? '▲' : '▼'}</span>;
+  };
+  const thClass = (key: SortKey) => 'sortable' + (sortKey === key ? ' active' : '');
   const selected = selectedNum !== null ? nodes.find((n) => n.num === selectedNum) : null;
   const me = nodes.find((n) => n.num === state.myInfo?.myNodeNum);
 
@@ -116,20 +236,32 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
               <Stat label="Relayed" value={String(relayed)} />
               <Stat label="Stale" value={String(staleCount)} />
               {mqttCount > 0 && <Stat label="Via MQTT" value={String(mqttCount)} />}
-              <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
-                <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>source:</span>
-                {(['all', 'rf', 'mqtt'] as SourceFilter[]).map((f) => (
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 12, alignItems: 'center' }}>
+                {sortKey !== 'smart' && (
                   <button
-                    key={f}
-                    className={'ghost' + (sourceFilter === f ? ' active' : '')}
-                    style={{ padding: '3px 9px', fontSize: 11, opacity: sourceFilter === f ? 1 : 0.7 }}
-                    onClick={() => setSourceFilter(f)}
-                    disabled={f === 'mqtt' && mqttCount === 0}
-                    title={f === 'mqtt' && mqttCount === 0 ? 'No MQTT-sourced nodes detected yet' : undefined}
+                    className="ghost"
+                    style={{ padding: '3px 9px', fontSize: 11 }}
+                    onClick={() => { setSortKey('smart'); setSortDir('asc'); }}
+                    title="Reset to smart default: me first, then fresh RF neighbours, then MQTT, then stale."
                   >
-                    {f === 'all' ? 'all' : f === 'rf' ? 'RF only' : 'MQTT only'}
+                    ↻ smart sort
                   </button>
-                ))}
+                )}
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>source:</span>
+                  {(['all', 'rf', 'mqtt'] as SourceFilter[]).map((f) => (
+                    <button
+                      key={f}
+                      className={'ghost' + (sourceFilter === f ? ' active' : '')}
+                      style={{ padding: '3px 9px', fontSize: 11, opacity: sourceFilter === f ? 1 : 0.7 }}
+                      onClick={() => setSourceFilter(f)}
+                      disabled={f === 'mqtt' && mqttCount === 0}
+                      title={f === 'mqtt' && mqttCount === 0 ? 'No MQTT-sourced nodes detected yet' : undefined}
+                    >
+                      {f === 'all' ? 'all' : f === 'rf' ? 'RF only' : 'MQTT only'}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -145,16 +277,16 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
               <table className="data">
                 <thead>
                   <tr>
-                    <th>Short</th>
-                    <th>Long name</th>
-                    <th>ID</th>
-                    <th>Hardware</th>
-                    <th>Src</th>
-                    <th>Hops</th>
-                    <th>SNR</th>
-                    <th>RSSI</th>
-                    <th>Battery</th>
-                    <th>Heard</th>
+                    <th className={thClass('shortName')}    onClick={onHeaderClick('shortName')}>Short{sortInd('shortName')}</th>
+                    <th className={thClass('longName')}     onClick={onHeaderClick('longName')}>Long name{sortInd('longName')}</th>
+                    <th className={thClass('num')}          onClick={onHeaderClick('num')}>ID{sortInd('num')}</th>
+                    <th className={thClass('hwModelName')}  onClick={onHeaderClick('hwModelName')}>Hardware{sortInd('hwModelName')}</th>
+                    <th className={thClass('viaMqtt')}      onClick={onHeaderClick('viaMqtt')}>Src{sortInd('viaMqtt')}</th>
+                    <th className={thClass('hopsAway')}     onClick={onHeaderClick('hopsAway')}>Hops{sortInd('hopsAway')}</th>
+                    <th className={thClass('snr')}          onClick={onHeaderClick('snr')}>SNR{sortInd('snr')}</th>
+                    <th className={thClass('rssi')}         onClick={onHeaderClick('rssi')}>RSSI{sortInd('rssi')}</th>
+                    <th className={thClass('batteryLevel')} onClick={onHeaderClick('batteryLevel')}>Battery{sortInd('batteryLevel')}</th>
+                    <th className={thClass('lastHeard')}    onClick={onHeaderClick('lastHeard')}>Heard{sortInd('lastHeard')}</th>
                     <th></th>
                   </tr>
                 </thead>

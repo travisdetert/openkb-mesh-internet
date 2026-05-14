@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { bus, type BusEvent, type BusFilter } from '../bus';
 import { listInstances, getInstance } from '../concepts/registry';
+import { nodeDisplayName } from '../lib/node-identity';
 
 interface Props {
   nodes: NodeRecord[];
@@ -9,12 +10,10 @@ interface Props {
 
 type Tab = 'all' | 'bytype' | 'stats' | 'about';
 
-function shortHex(num: number): string { return '!' + (num >>> 0).toString(16).padStart(8, '0').slice(-4); }
 function nameFor(nodes: NodeRecord[], from: string | number | undefined): string {
   if (from === undefined) return '—';
   if (typeof from === 'string') return from;
-  const n = nodes.find((x) => x.num === from);
-  return n?.shortName || shortHex(from);
+  return nodeDisplayName(nodes, from);
 }
 function colorForKey(key: string): string {
   let h = 0;

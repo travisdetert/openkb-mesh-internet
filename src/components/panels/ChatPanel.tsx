@@ -11,12 +11,9 @@ import { ditherImage, decodeOneBitImage, renderOneBitImage, type DitheredImage }
 import { expandSmartText, parseSlashCommand, listShortcodes } from '../../lib/smart-text';
 import { SmartText } from '../SmartText';
 import { VoiceRecorder, packVoice, unpackVoice, type VoiceClip, VOICE_MAX_MS } from '../../lib/voice-codec';
+import { nodeShortHex as shortHex, nodeDisplayName, nodeLongName } from '../../lib/node-identity';
 
 const BROADCAST = 0xffffffff;
-
-function shortHex(num: number): string {
-  return '!' + (num >>> 0).toString(16).padStart(8, '0').slice(-4);
-}
 
 function labelForPosition(p: PositionPayload): string {
   const coords = `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`;
@@ -30,14 +27,12 @@ function labelForWaypoint(p: WaypointPayload): string {
 
 function nameFor(nodes: NodeRecord[], num: number): string {
   if (num === BROADCAST) return 'all';
-  const n = nodes.find((x) => x.num === num);
-  return n?.shortName || shortHex(num);
+  return nodeDisplayName(nodes, num);
 }
 
 function longNameFor(nodes: NodeRecord[], num: number): string {
   if (num === BROADCAST) return 'Broadcast';
-  const n = nodes.find((x) => x.num === num);
-  return n?.longName || n?.shortName || shortHex(num);
+  return nodeLongName(nodes, num);
 }
 
 interface ConvoItem {

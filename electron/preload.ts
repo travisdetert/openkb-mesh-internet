@@ -34,6 +34,12 @@ const api = {
   refresh:            (connId: string) => ipcRenderer.invoke('mesh:refresh', connId),
   lastRefreshAt:      (connId: string) => ipcRenderer.invoke('mesh:lastRefreshAt', connId),
   broadcastNodeInfo:  (connId: string) => ipcRenderer.invoke('mesh:broadcastNodeInfo', connId),
+  reboot:             (args: { connId: string; seconds?: number }) => ipcRenderer.invoke('mesh:reboot', args),
+  // ── BLE bridge ──────────────────────────────────────────────────────
+  bleStartSession:    (deviceName: string) => ipcRenderer.invoke('mesh:bleStartSession', deviceName),
+  bleRxFrame:         (args: { connId: string; bytes: string }) => ipcRenderer.invoke('mesh:bleRxFrame', args),
+  bleDisconnected:    (args: { connId: string; reason?: string }) => ipcRenderer.invoke('mesh:bleDisconnected', args),
+  bleError:           (args: { connId: string; message: string }) => ipcRenderer.invoke('mesh:bleError', args),
   getAutoConnect:     () => ipcRenderer.invoke('mesh:getAutoConnect'),
   setAutoConnect:     (enabled: boolean) => ipcRenderer.invoke('mesh:setAutoConnect', enabled),
   getPortStats:       (connId: string) => ipcRenderer.invoke('mesh:getPortStats', connId),
@@ -111,6 +117,18 @@ const api = {
     const fn = (_e: unknown, p: { connId: string }) => cb(p);
     ipcRenderer.on('mesh:connectionRemoved', fn);
     return () => ipcRenderer.removeListener('mesh:connectionRemoved', fn);
+  },
+  // Main process asks renderer to push one ToRadio frame over GATT.
+  onBleTxFrame: (cb: (p: { connId: string; bytes: string }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; bytes: string }) => cb(p);
+    ipcRenderer.on('mesh:bleTxFrame', fn);
+    return () => ipcRenderer.removeListener('mesh:bleTxFrame', fn);
+  },
+  // Main asks renderer to close GATT (manager-initiated disconnect).
+  onBleDisconnectRequest: (cb: (p: { connId: string }) => void) => {
+    const fn = (_e: unknown, p: { connId: string }) => cb(p);
+    ipcRenderer.on('mesh:bleDisconnectRequest', fn);
+    return () => ipcRenderer.removeListener('mesh:bleDisconnectRequest', fn);
   },
 };
 
