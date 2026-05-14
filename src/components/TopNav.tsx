@@ -14,6 +14,7 @@ export type TabId =
   | 'delivery'
   | 'sniffer'
   | 'discovery'
+  | 'asymmetric-links'
   | 'link-budget'
   | 'rssi-distance'
   | 'coverage'
@@ -57,6 +58,7 @@ export const TABS: Tab[] = [
   { id: 'traceroute',   label: 'Traceroute',     group: 'troubleshoot' },
   { id: 'sniffer',      label: 'Packet Sniffer', group: 'troubleshoot' },
   { id: 'discovery',     label: 'Node Discovery',  group: 'learn' },
+  { id: 'asymmetric-links', label: 'Acks & Asymmetry', group: 'learn' },
   { id: 'link-budget',   label: 'Link Budget',     group: 'learn' },
   { id: 'rssi-distance', label: 'RSSI vs Distance', group: 'learn' },
   { id: 'coverage',      label: 'Coverage',         group: 'learn' },

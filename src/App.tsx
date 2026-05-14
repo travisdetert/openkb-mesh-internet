@@ -32,6 +32,7 @@ import { LinkTestPanel } from './components/panels/LinkTestPanel';
 import { DeviceLabPanel } from './components/panels/DeviceLabPanel';
 import { FirmwarePanel } from './components/panels/FirmwarePanel';
 import { DiscoveryPanel } from './components/learning/DiscoveryPanel';
+import { AsymmetricLinksPanel } from './components/learning/AsymmetricLinksPanel';
 import { LinkBudgetPanel } from './components/learning/LinkBudgetPanel';
 import { SignalDistancePanel } from './components/learning/SignalDistancePanel';
 import { CoveragePanel } from './components/learning/CoveragePanel';
@@ -348,6 +349,7 @@ export function App() {
         />
       )}
       {tab === 'discovery' && <DiscoveryPanel state={mesh.state} nodes={mesh.nodes} go={setTab} />}
+      {tab === 'asymmetric-links' && <AsymmetricLinksPanel go={setTab} />}
       {tab === 'link-budget' && <LinkBudgetPanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} go={setTab} />}
       {tab === 'rssi-distance' && <SignalDistancePanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} go={setTab} />}
       {tab === 'coverage' && <CoveragePanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} go={setTab} />}
