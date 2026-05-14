@@ -1,8 +1,31 @@
 import { app, BrowserWindow, ipcMain, session, systemPreferences } from 'electron';
 import path from 'path';
+import fs from 'fs';
 import { MeshManager } from './meshtastic/manager';
 import { MeshDatabase } from './database';
 import { initCodec } from './meshtastic/protobuf-codec';
+
+// Tee main process stdout/stderr (and the forwarded renderer console below)
+// to a fixed log file so debugging doesn't require opening DevTools. The
+// renderer console-message forwarder writes through console.log → stdout,
+// so all three streams land in this one file. `tail -f` to watch live.
+const LOG_PATH = '/tmp/openkb-mesh-internet.log';
+try {
+  const logStream = fs.createWriteStream(LOG_PATH, { flags: 'a' });
+  const origStdout = process.stdout.write.bind(process.stdout);
+  const origStderr = process.stderr.write.bind(process.stderr);
+  process.stdout.write = ((chunk: any, ...args: any[]) => {
+    try { logStream.write(chunk); } catch { /* file gone, ignore */ }
+    return origStdout(chunk, ...args);
+  }) as any;
+  process.stderr.write = ((chunk: any, ...args: any[]) => {
+    try { logStream.write(chunk); } catch { /* file gone, ignore */ }
+    return origStderr(chunk, ...args);
+  }) as any;
+  console.log(`[main] log tee → ${LOG_PATH} pid=${process.pid}`);
+} catch (e) {
+  console.warn(`[main] could not open log file ${LOG_PATH}:`, e);
+}
 
 process.on('uncaughtException', (err) => {
   if (err.message.includes('EPIPE') || err.message.includes('write after end')) return;

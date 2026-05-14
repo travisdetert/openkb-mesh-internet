@@ -109,9 +109,19 @@ export class MeshManager extends EventEmitter {
       // it as terminal: drop the controller and tell the UI the connection
       // is gone, otherwise the ghost row sticks around forever and the
       // replug shows up as a *new* connId next to it.
+      //
+      // By the time we get here, the serial layer has already exhausted its
+      // internal reconnect attempts — see MeshtasticSerialConnection.
+      // attemptReconnect, which only fires the disconnect callback after
+      // MAX_RECONNECT_ATTEMPTS. So this branch represents "really gone".
       if (state.status === 'disconnected' && this.controllers.get(id) === controller) {
         if (this.portToId.get(portPath) === id) this.portToId.delete(portPath);
         this.controllers.delete(id);
+        // Force-close the underlying port and suppress any future reconnect.
+        // Without this, an in-flight reconnect timer scheduled before the
+        // give-up branch fired could still try to reopen the port after
+        // we've forgotten about this connection.
+        void controller.disconnect().catch(() => { /* best-effort cleanup */ });
         this.emit('connection-removed', { connId: id });
         // NOTE: not adding to recentlyClosed — we *want* auto-connect to
         // grab the device again as soon as it reappears on the bus.

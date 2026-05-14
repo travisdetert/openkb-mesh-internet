@@ -73,6 +73,9 @@ export class MeshtasticSerialConnection {
   private portPath: string = '';
   private explicitDisconnect = false;
   private reconnectAttempts = 0;
+  /** Set while a reconnect timer is scheduled, to avoid double-firing when
+   *  both 'error' and 'close' events arrive for the same failure. */
+  private reconnectPending = false;
 
   private fromRadioCallback: ((bytes: Uint8Array) => void) | null = null;
   private disconnectCallback: (() => void) | null = null;
@@ -133,6 +136,7 @@ export class MeshtasticSerialConnection {
     this.portPath = portPath;
     this.explicitDisconnect = false;
     this.reconnectAttempts = 0;
+    this.reconnectPending = false;
     this.buffer = Buffer.alloc(0);
     this.stats = freshStats();
 
@@ -311,7 +315,12 @@ export class MeshtasticSerialConnection {
       port.on('close', () => {
         this.emitEvent({ kind: 'close', at: Date.now(), detail: this.explicitDisconnect ? 'user disconnect' : 'unexpected' });
         if (!this.explicitDisconnect) {
-          this.disconnectCallback?.();
+          // Don't notify the controller here. attemptReconnect() fires the
+          // disconnect callback if/when reconnect attempts are exhausted.
+          // Firing it on every close caused the manager to tear the
+          // controller down while the serial layer was still trying to
+          // come back, leaving orphan reconnect loops + ghost connection
+          // rows for boards that flap (LilyGo S3 with the DTR-reset issue).
           this.attemptReconnect();
         }
       });
@@ -322,6 +331,12 @@ export class MeshtasticSerialConnection {
           return;
         }
         this.port = port;
+        // Intentionally NOT calling port.set({ dtr, rts }) here. ESP32-S3
+        // native USB devices (Heltec V3, Station G2, and LilyGo S3 variants)
+        // run Arduino's USBCDC, whose `Serial.connected()` returns the DTR
+        // state. Firmware that gates writes on connected() — Meshtastic does
+        // — would go silent if we deasserted DTR. The OS default on
+        // open (DTR=1, RTS=1) is what the firmware expects.
         resolve();
       });
     });
@@ -413,12 +428,14 @@ export class MeshtasticSerialConnection {
 
   private attemptReconnect(): void {
     if (this.explicitDisconnect) return;
+    if (this.reconnectPending) return; // already scheduled — close+error race
     if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       this.emitError(new Error(`Gave up reconnecting to ${this.portPath} after ${MAX_RECONNECT_ATTEMPTS} attempts`));
       this.disconnectCallback?.();
       return;
     }
 
+    this.reconnectPending = true;
     this.reconnectAttempts++;
     this.stats.reconnectCount = this.reconnectAttempts;
     this.emitEvent({ kind: 'reconnect-attempt', at: Date.now(), detail: `attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}` });
@@ -430,8 +447,10 @@ export class MeshtasticSerialConnection {
         await this.openPort(this.portPath);
         this.emitEvent({ kind: 'reconnect-ok', at: Date.now() });
         this.reconnectAttempts = 0;
+        this.reconnectPending = false;
         this.reconnectCallback?.();
       } catch (err) {
+        this.reconnectPending = false;
         this.emitError(err instanceof Error ? err : new Error(String(err)));
         this.attemptReconnect();
       }
