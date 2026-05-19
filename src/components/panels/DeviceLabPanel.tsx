@@ -18,12 +18,26 @@ const MAX_EVENT_LINES = 200;
 type LogEntry = {
   at: number;
   direction: 'rx' | 'tx';
-  /** Decoded printable preview — strips control bytes for readability. */
+  /** Plain-text version of the line (for search / CSV / copy). */
   text: string;
-  /** Hex dump of the original bytes, capped at 80 hex chars. */
-  hex: string;
+  /** ANSI-coloured segments for rendering. */
+  segments: AnsiSegment[];
+  /** Raw bytes for this line; hex view is derived from this. */
+  rawHead: Uint8Array;
   bytes: number;
+  /** Number of raw USB chunks that fed into this line (often 1, sometimes
+   *  more when a single log line gets split across reads). */
+  chunks: number;
 };
+
+const RAW_HEAD_CAP = 256;
+/** If a partial line sits in the buffer with no newline arriving, flush
+ *  it after this many ms. Binary protobuf frames have no newlines, so
+ *  this is what makes them appear at all. */
+const PARTIAL_FLUSH_MS = 200;
+/** Hard cap on a single buffered "line" — protects against pathological
+ *  firmware output that never sends a newline. */
+const LINE_BYTE_CAP = 4096;
 
 function base64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
@@ -32,19 +46,80 @@ function base64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
-function bytesToPrintable(u8: Uint8Array): string {
-  // Replace non-printable bytes with a faint dot so boot logs (mostly ASCII)
-  // come out readable while binary protobuf still shows its shape.
-  let s = '';
+// Meshtastic firmware emits coloured log output via standard ANSI SGR
+// escapes — DEBUG cyan/blue, INFO green, WARN yellow, ERROR red, etc.
+// We parse those out into typed segments so the renderer can show them
+// as actual colours, plus produce a plain-text version for copy/CSV.
+const ANSI_CSI_RE = /\x1b\[([0-9;?]*)([a-zA-Z])/g;
+// Standard SGR foreground colours mapped to readable hues for our dark theme.
+const ANSI_FG: Record<number, string> = {
+  30: '#7a828f', // black -> grey (would be invisible on dark bg otherwise)
+  31: '#ff6b81', // red
+  32: '#66d39a', // green
+  33: '#ffd166', // yellow
+  34: '#5cc8ff', // blue
+  35: '#b88aff', // magenta
+  36: '#5fd0d7', // cyan
+  37: '#e6e8ee', // white
+  90: '#9aa3b2', 91: '#ff6b81', 92: '#66d39a', 93: '#ffd166',
+  94: '#5cc8ff', 95: '#b88aff', 96: '#5fd0d7', 97: '#ffffff',
+};
+
+export interface AnsiSegment {
+  text: string;
+  color?: string;
+  bold?: boolean;
+}
+
+/**
+ * Decode bytes into ANSI-aware segments. Non-printable bytes become
+ * a faint dot so binary protobuf frames still show their rough shape.
+ * Newlines, tabs, and CR are preserved (with CR dropped, like a normal
+ * terminal). ESC sequences drive the colour state machine.
+ */
+function bytesToSegments(u8: Uint8Array): AnsiSegment[] {
+  // Phase 1: build a printable string keeping ESC bytes so the regex
+  // can match whole CSI sequences.
+  let raw = '';
   for (let i = 0; i < u8.length; i++) {
     const c = u8[i];
-    if (c === 0x0a) s += '\n';
+    if (c === 0x0a) raw += '\n';
     else if (c === 0x0d) continue;
-    else if (c === 0x09) s += '\t';
-    else if (c < 0x20 || c > 0x7e) s += '·';
-    else s += String.fromCharCode(c);
+    else if (c === 0x09) raw += '\t';
+    else if (c === 0x1b) raw += '\x1b';
+    else if (c < 0x20 || c > 0x7e) raw += '·';
+    else raw += String.fromCharCode(c);
   }
-  return s;
+  // Phase 2: walk the string, splitting on CSI matches and accumulating
+  // segments under the current SGR state.
+  const segments: AnsiSegment[] = [];
+  let cursor = 0;
+  let color: string | undefined;
+  let bold = false;
+  ANSI_CSI_RE.lastIndex = 0;
+  for (let m: RegExpExecArray | null; (m = ANSI_CSI_RE.exec(raw)); ) {
+    const before = raw.slice(cursor, m.index);
+    if (before) segments.push({ text: before, color, bold });
+    cursor = m.index + m[0].length;
+    if (m[2] !== 'm') continue; // non-SGR (cursor moves etc.) — just drop
+    const params = m[1].split(';').filter((s) => s.length > 0).map((s) => parseInt(s, 10));
+    if (params.length === 0) { color = undefined; bold = false; continue; }
+    for (const p of params) {
+      if (p === 0)      { color = undefined; bold = false; }
+      else if (p === 1) bold = true;
+      else if (p === 22) bold = false;
+      else if (p === 39) color = undefined;
+      else if (ANSI_FG[p]) color = ANSI_FG[p];
+    }
+  }
+  if (cursor < raw.length) segments.push({ text: raw.slice(cursor), color, bold });
+  return segments;
+}
+
+/** Join ANSI segments into the same plain-text form bytesToPrintable
+ *  used to return — for hex-mode toggle, CSV export, search, etc. */
+function segmentsToPlain(segs: AnsiSegment[]): string {
+  return segs.map((s) => s.text).join('');
 }
 
 function bytesToHex(u8: Uint8Array, max = 32): string {
@@ -93,35 +168,111 @@ export function DeviceLabPanel() {
   const [insights, setInsights] = useState<DeviceInsights>(emptyInsights);
   const logRef = useRef<HTMLDivElement | null>(null);
   const autoscroll = useRef(true);
-  // Carry-over for an rx chunk that ends mid-line, so the parser always sees
-  // complete lines (a `rst:` banner split across two chunks would otherwise
-  // be missed).
-  const lineCarry = useRef('');
+  // Per-direction line buffer. Raw bytes accumulate until we see a newline
+  // (printable firmware output) or the partial-flush timer fires (binary
+  // protobuf frames, partial trailers). Each emitted log row corresponds
+  // to one logical line, with ANSI escape sequences reassembled across
+  // chunk boundaries before parsing.
+  type LineBuf = { bytes: Uint8Array; ts: number; chunks: number; timer: any };
+  const rxBuf = useRef<LineBuf>({ bytes: new Uint8Array(0), ts: 0, chunks: 0, timer: null });
+  const txBuf = useRef<LineBuf>({ bytes: new Uint8Array(0), ts: 0, chunks: 0, timer: null });
+  // Carry-over for the boot/crash text parser (different concern from the
+  // rendering line buffer — kept as plain text since insights only cares
+  // about decoded lines).
+  const insightsCarry = useRef('');
 
   // Stream raw bytes and structured events for the currently-active radio.
   useEffect(() => {
     if (!active) return;
+
+    const emitEntry = (direction: 'rx' | 'tx', bytes: Uint8Array, at: number, chunks: number) => {
+      const segments = bytesToSegments(bytes);
+      const text = segmentsToPlain(segments).replace(/\n+$/, '');
+      // Skip pure-whitespace rows so a trailing CR/LF doesn't produce a
+      // blank line of its own.
+      if (text.length === 0 && bytes.every((b) => b === 0x0a || b === 0x0d)) return;
+      // Re-segment without the trailing newline so the row renders cleanly.
+      const trimmedSegs: AnsiSegment[] = [];
+      let remaining = text.length;
+      for (const s of segments) {
+        if (remaining <= 0) break;
+        if (s.text.length === 0) continue;
+        if (s.text.length <= remaining) {
+          trimmedSegs.push(s);
+          remaining -= s.text.length;
+        } else {
+          trimmedSegs.push({ ...s, text: s.text.slice(0, remaining) });
+          remaining = 0;
+        }
+      }
+      setLog((prev) => {
+        const next = prev.length >= MAX_LOG_LINES ? prev.slice(prev.length - MAX_LOG_LINES + 1) : prev.slice();
+        next.push({
+          at,
+          direction,
+          text,
+          segments: trimmedSegs,
+          rawHead: bytes.length > RAW_HEAD_CAP ? bytes.subarray(0, RAW_HEAD_CAP) : bytes,
+          bytes: bytes.length,
+          chunks,
+        });
+        return next;
+      });
+    };
+
+    const flushBuf = (direction: 'rx' | 'tx', buf: LineBuf) => {
+      if (buf.timer) { clearTimeout(buf.timer); buf.timer = null; }
+      if (buf.bytes.length === 0) return;
+      emitEntry(direction, buf.bytes, buf.ts, buf.chunks);
+      buf.bytes = new Uint8Array(0);
+      buf.ts = 0;
+      buf.chunks = 0;
+    };
+
+    const handleChunk = (direction: 'rx' | 'tx', incoming: Uint8Array, at: number) => {
+      const buf = direction === 'rx' ? rxBuf.current : txBuf.current;
+      if (buf.bytes.length === 0) buf.ts = at;
+      // Append incoming bytes to the buffer.
+      const combined = new Uint8Array(buf.bytes.length + incoming.length);
+      combined.set(buf.bytes, 0);
+      combined.set(incoming, buf.bytes.length);
+      buf.bytes = combined;
+      buf.chunks += 1;
+      // Walk the combined buffer, emitting one entry per newline.
+      let start = 0;
+      for (let i = 0; i < buf.bytes.length; i++) {
+        if (buf.bytes[i] === 0x0a) {
+          const line = buf.bytes.subarray(start, i + 1);
+          // Each emitted line takes credit for the chunk it landed in;
+          // approximate "chunks" as the running counter, then reset.
+          emitEntry(direction, line, buf.ts, buf.chunks);
+          start = i + 1;
+          buf.ts = at;
+          buf.chunks = 1;
+        }
+      }
+      if (start > 0) {
+        buf.bytes = buf.bytes.subarray(start);
+        if (buf.bytes.length === 0) { buf.ts = 0; buf.chunks = 0; }
+      }
+      // Hard cap: protect against a runaway producer that never emits \n.
+      if (buf.bytes.length > LINE_BYTE_CAP) flushBuf(direction, buf);
+      // (Re)arm the partial-flush timer for whatever tail remains.
+      if (buf.timer) clearTimeout(buf.timer);
+      if (buf.bytes.length > 0) {
+        buf.timer = setTimeout(() => flushBuf(direction, buf), PARTIAL_FLUSH_MS);
+      }
+    };
+
     const offRaw = window.mesh.onSerialRaw((p) => {
       if (paused || p.connId !== active.connId) return;
       const u8 = base64ToBytes(p.bytes);
-      const text = bytesToPrintable(u8);
-      setLog((prev) => {
-        const entry: LogEntry = {
-          at: p.at,
-          direction: p.direction,
-          text,
-          hex: bytesToHex(u8),
-          bytes: u8.length,
-        };
-        const next = prev.length >= MAX_LOG_LINES ? prev.slice(-MAX_LOG_LINES + 1) : prev.slice();
-        next.push(entry);
-        return next;
-      });
+      handleChunk(p.direction, u8, p.at);
       // Only the rx stream carries the device's boot text / panic dumps.
       if (p.direction === 'rx') {
-        const combined = lineCarry.current + text;
+        const combined = insightsCarry.current + segmentsToPlain(bytesToSegments(u8));
         const lines = combined.split('\n');
-        lineCarry.current = lines.pop() ?? '';
+        insightsCarry.current = lines.pop() ?? '';
         if (lines.length > 0) {
           setInsights((prev) => foldLines(prev, lines, p.at));
         }
@@ -135,7 +286,12 @@ export function DeviceLabPanel() {
         return next;
       });
     });
-    return () => { offRaw(); offEvt(); };
+    return () => {
+      offRaw();
+      offEvt();
+      if (rxBuf.current.timer) { clearTimeout(rxBuf.current.timer); rxBuf.current.timer = null; }
+      if (txBuf.current.timer) { clearTimeout(txBuf.current.timer); txBuf.current.timer = null; }
+    };
   }, [active?.connId, paused]);
 
   // Reset buffer when the active connection switches.
@@ -144,7 +300,11 @@ export function DeviceLabPanel() {
     setEvents([]);
     setActionResult(null);
     setInsights(emptyInsights());
-    lineCarry.current = '';
+    insightsCarry.current = '';
+    if (rxBuf.current.timer) clearTimeout(rxBuf.current.timer);
+    if (txBuf.current.timer) clearTimeout(txBuf.current.timer);
+    rxBuf.current = { bytes: new Uint8Array(0), ts: 0, chunks: 0, timer: null };
+    txBuf.current = { bytes: new Uint8Array(0), ts: 0, chunks: 0, timer: null };
   }, [active?.connId]);
 
   // Poll stats every second — they change too fast for event-driven updates
@@ -312,7 +472,14 @@ export function DeviceLabPanel() {
         >
           ⤓ BOOTSEL (RP2040)
         </button>
-        <button className="lab-btn ghost" onClick={() => { setLog([]); setEvents([]); setInsights(emptyInsights()); lineCarry.current = ''; }}>Clear log</button>
+        <button className="lab-btn ghost" onClick={() => {
+          setLog([]); setEvents([]); setInsights(emptyInsights());
+          insightsCarry.current = '';
+          if (rxBuf.current.timer) clearTimeout(rxBuf.current.timer);
+          if (txBuf.current.timer) clearTimeout(txBuf.current.timer);
+          rxBuf.current = { bytes: new Uint8Array(0), ts: 0, chunks: 0, timer: null };
+          txBuf.current = { bytes: new Uint8Array(0), ts: 0, chunks: 0, timer: null };
+        }}>Clear log</button>
         <button className="lab-btn ghost" onClick={() => setPaused((p) => !p)}>{paused ? '▶ Resume' : '❚❚ Pause'}</button>
         <button className="lab-btn ghost" onClick={saveCapture}>⤓ Save capture</button>
       </div>
@@ -369,8 +536,24 @@ export function DeviceLabPanel() {
               <div key={i} className={`lab-log-row lab-log-${l.direction}`}>
                 <span className="lab-log-time">{fmtTime(l.at)}</span>
                 <span className="lab-log-dir">{l.direction === 'rx' ? '◀' : '▶'}</span>
-                <span className="lab-log-bytes">{l.bytes}b</span>
-                <span className="lab-log-text">{hexMode ? l.hex : l.text}</span>
+                <span className="lab-log-bytes" title={l.chunks > 1 ? `${l.chunks} chunks merged` : '1 chunk'}>
+                  {l.bytes}b{l.chunks > 1 ? `·${l.chunks}` : ''}
+                </span>
+                <span className="lab-log-text">
+                  {hexMode
+                    ? bytesToHex(l.rawHead, 64) + (l.bytes > l.rawHead.length ? ` …(+${l.bytes - l.rawHead.length}b)` : '')
+                    : l.segments.map((s, j) => (
+                        <span
+                          key={j}
+                          style={{
+                            color: s.color,
+                            fontWeight: s.bold ? 600 : undefined,
+                          }}
+                        >
+                          {s.text}
+                        </span>
+                      ))}
+                </span>
               </div>
             ))}
           </div>

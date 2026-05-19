@@ -767,7 +767,15 @@ h1.page-title { font-size: 18px; margin: 0 0 4px; }
 .lab-log-rx .lab-log-dir { color: var(--accent); }
 .lab-log-tx .lab-log-dir { color: var(--good); }
 .lab-log-bytes { color: var(--text-faint); text-align: right; }
-.lab-log-text { color: var(--text); }
+.lab-log-text {
+  color: var(--text);
+  /* Merged chunks can contain real newlines from the firmware log
+     output — render them as actual line breaks instead of one wrapped
+     blob. pre-wrap preserves leading whitespace too (firmware sometimes
+     indents continuation lines). */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .lab-log-rx .lab-log-text { color: var(--text); }
 .lab-log-tx .lab-log-text { color: var(--text-dim); }
 
