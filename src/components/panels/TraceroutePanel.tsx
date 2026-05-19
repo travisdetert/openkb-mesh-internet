@@ -380,12 +380,212 @@ function DestinationHistory({ entry, nodes, state, onMessageNode }: {
         </div>
       )}
 
+      <HopReliability entry={entry} nodes={nodes} myNum={state.myInfo?.myNodeNum} />
+
       <div style={{ marginTop: 14 }}>
         <h3 style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-faint)', marginBottom: 8 }}>Individual traces</h3>
         {entry.traces.map((tr, i) => (
           <TraceCard key={i} record={tr} nodes={nodes} myNum={state.myInfo?.myNodeNum} onMessageNode={onMessageNode} compact />
         ))}
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Per-hop reliability summary
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Aggregate every trace to a given destination into per-link reliability
+ * stats. Each "link" is an ordered pair (from→to) appearing in the
+ * forward or return path of some trace. We track:
+ *   - apperances: how many of the answered traces this link was in
+ *   - SNR samples (forward + return), with min/avg
+ *   - bottleneck heuristic: the link with the lowest mean SNR is the
+ *     weakest leg of the chain, and is what would most benefit from an
+ *     antenna/elevation improvement.
+ *
+ * Round-trip success is `entry.answered / entry.traces.length`. With
+ * the per-link reliability + the round-trip rate, the user can see
+ * exactly why intermittent traces fail.
+ */
+function HopReliability({ entry, nodes, myNum }: { entry: { traces: TracerouteRecord[]; answered: number }; nodes: NodeRecord[]; myNum?: number }) {
+  type LinkStat = {
+    from: number;
+    to: number;
+    appearances: number;        // number of answered traces this link is in
+    fwdSnrs: number[];
+    backSnrs: number[];
+  };
+
+  const answered = entry.traces.filter((t) => t.response);
+  if (answered.length === 0) {
+    return (
+      <div className="info-card" style={{ borderLeftColor: 'var(--bad)', marginTop: 14 }}>
+        <p style={{ margin: 0, fontSize: 13 }}>
+          <strong style={{ color: 'var(--bad)' }}>0 of {entry.traces.length}</strong> traces completed.
+          That means either the forward path doesn't close (your packet never reaches them) or the reply path
+          doesn't (they hear you but their answer can't get back). Common causes are hop limit, asymmetric link,
+          or a missing intermediate relay. The traces below have no per-hop data because no response came back.
+        </p>
+      </div>
+    );
+  }
+
+  const links = new Map<string, LinkStat>();
+  const linkKey = (a: number, b: number) => `${a}>${b}`;
+
+  for (const t of answered) {
+    const r = t.response!;
+    // Forward chain: me → route[0] → … → target. The route field doesn't
+    // include the endpoints, so we synthesise the full chain.
+    const target = r.from; // response.from = the node that replied = destination
+    const fwd = [myNum ?? 0, ...r.route, target].filter((n) => n);
+    for (let i = 0; i < fwd.length - 1; i++) {
+      const key = linkKey(fwd[i], fwd[i + 1]);
+      const s = links.get(key) ?? { from: fwd[i], to: fwd[i + 1], appearances: 0, fwdSnrs: [], backSnrs: [] };
+      s.appearances += 1;
+      // snr_towards[i] is the SNR observed at fwd[i+1] for the packet from
+      // fwd[i]. May not be present in older firmware — guard for missing.
+      const snr = r.snrTowards?.[i];
+      if (typeof snr === 'number' && Number.isFinite(snr) && snr !== 0) s.fwdSnrs.push(snr);
+      links.set(key, s);
+    }
+    // Return chain: target → routeBack[0] → … → me. routeBack may be
+    // empty on firmware that doesn't populate it (older builds) — we just
+    // skip the return-direction stats in that case.
+    if (Array.isArray(r.routeBack) && r.routeBack.length > 0) {
+      const back = [target, ...r.routeBack, myNum ?? 0].filter((n) => n);
+      for (let i = 0; i < back.length - 1; i++) {
+        const key = linkKey(back[i], back[i + 1]);
+        const s = links.get(key) ?? { from: back[i], to: back[i + 1], appearances: 0, fwdSnrs: [], backSnrs: [] };
+        // Don't double-count appearance — the return path is the same
+        // attempt, not a new one. Only record SNR.
+        const snr = r.snrBack?.[i];
+        if (typeof snr === 'number' && Number.isFinite(snr) && snr !== 0) s.backSnrs.push(snr);
+        links.set(key, s);
+      }
+    }
+  }
+
+  const rows = Array.from(links.values()).map((s) => {
+    const fwdAvg = s.fwdSnrs.length ? s.fwdSnrs.reduce((a, b) => a + b, 0) / s.fwdSnrs.length : null;
+    const fwdMin = s.fwdSnrs.length ? Math.min(...s.fwdSnrs) : null;
+    const backAvg = s.backSnrs.length ? s.backSnrs.reduce((a, b) => a + b, 0) / s.backSnrs.length : null;
+    const backMin = s.backSnrs.length ? Math.min(...s.backSnrs) : null;
+    // Mean of available SNR values across directions — used to rank
+    // bottlenecks. Lower = weaker leg.
+    const meanSnr = (fwdAvg !== null && backAvg !== null) ? (fwdAvg + backAvg) / 2
+      : (fwdAvg ?? backAvg);
+    return { ...s, fwdAvg, fwdMin, backAvg, backMin, meanSnr };
+  });
+
+  const total = answered.length;
+  // Bottleneck = link with the worst mean SNR (only consider links with
+  // any SNR samples, to avoid promoting "no data" entries as bottlenecks).
+  const withSnr = rows.filter((r) => r.meanSnr !== null);
+  const bottleneck = withSnr.length > 0
+    ? withSnr.reduce((a, b) => (a.meanSnr! < b.meanSnr! ? a : b))
+    : null;
+
+  const rttsMs = answered.map((t) => t.response!.receivedAt - t.sentAt);
+  const rttAvg = rttsMs.reduce((a, b) => a + b, 0) / rttsMs.length / 1000;
+  const rttMin = Math.min(...rttsMs) / 1000;
+  const rttMax = Math.max(...rttsMs) / 1000;
+  const roundTripPct = (answered.length / entry.traces.length) * 100;
+
+  const name = (num: number) => {
+    const n = nodes.find((x) => x.num === num);
+    if (num === myNum) return 'me';
+    return n?.shortName || shortHex(num);
+  };
+  const snrLabel = (v: number | null) => v === null ? '—' : `${v.toFixed(1)}`;
+  const snrTone = (v: number | null) => {
+    if (v === null) return 'var(--text-faint)';
+    if (v >= 5) return 'var(--good)';
+    if (v >= -5) return 'var(--warn)';
+    return 'var(--bad)';
+  };
+
+  // Sort: bottleneck first, then by appearance frequency (most common
+  // links highest), then by mean SNR ascending.
+  rows.sort((a, b) => {
+    if (a === bottleneck) return -1;
+    if (b === bottleneck) return 1;
+    if (a.appearances !== b.appearances) return b.appearances - a.appearances;
+    return (a.meanSnr ?? Infinity) - (b.meanSnr ?? Infinity);
+  });
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <h3 style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-faint)', marginBottom: 8 }}>
+        Per-hop reliability ({answered.length} answered of {entry.traces.length})
+      </h3>
+
+      <div className="info-card" style={{ marginBottom: 10, borderLeftColor: roundTripPct >= 80 ? 'var(--good)' : roundTripPct >= 50 ? 'var(--warn)' : 'var(--bad)' }}>
+        <p style={{ margin: 0, fontSize: 13 }}>
+          <strong>Round-trip success: {roundTripPct.toFixed(0)}%</strong>
+          <span style={{ color: 'var(--text-faint)' }}> · RTT {rttMin.toFixed(1)}–{rttMax.toFixed(1)} s (avg {rttAvg.toFixed(1)} s)</span>
+        </p>
+        {bottleneck && (
+          <p style={{ margin: '6px 0 0', fontSize: 12.5, color: 'var(--text-dim)' }}>
+            <strong style={{ color: 'var(--warn)' }}>Bottleneck:</strong>{' '}
+            <code>{name(bottleneck.from)} → {name(bottleneck.to)}</code>{' '}
+            — mean SNR {bottleneck.meanSnr?.toFixed(1)} dB, appears in {bottleneck.appearances}/{total} answered traces.
+            {bottleneck.meanSnr !== null && bottleneck.meanSnr < -5 && (
+              <> At this SNR the receiver is near the LoRa decode cliff (-20 dB SF12, -7.5 dB LongFast) — small environmental changes (a moving vehicle, wet leaves, time of day) tip individual packets past correctable bit errors. This is why retries succeed and fail seemingly at random.</>
+            )}
+            {bottleneck.meanSnr !== null && bottleneck.meanSnr >= -5 && bottleneck.meanSnr < 5 && (
+              <> Working but with little headroom — a few dB of fading can cause intermittent drops. Antenna height / gain on this leg's endpoints is the cheapest improvement.</>
+            )}
+          </p>
+        )}
+        {!bottleneck && (
+          <p style={{ margin: '6px 0 0', fontSize: 12, color: 'var(--text-faint)' }}>
+            Per-hop SNR data isn't populated by this peer's firmware — we can still see <em>which</em> hops are involved, just not how strong each leg is.
+          </p>
+        )}
+      </div>
+
+      <div className="card" style={{ padding: 0 }}>
+        <table className="data" style={{ fontSize: 12 }}>
+          <thead>
+            <tr>
+              <th>Link</th>
+              <th style={{ textAlign: 'right' }}>Appears</th>
+              <th style={{ textAlign: 'right' }}>SNR →</th>
+              <th style={{ textAlign: 'right' }}>SNR ←</th>
+              <th style={{ textAlign: 'right' }}>Min →</th>
+              <th style={{ textAlign: 'right' }}>Min ←</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const isBottleneck = r === bottleneck;
+              return (
+                <tr key={`${r.from}-${r.to}`} style={isBottleneck ? { background: 'rgba(255,209,102,0.08)' } : undefined}>
+                  <td>
+                    {isBottleneck && <span title="weakest leg" style={{ marginRight: 6 }}>⚠</span>}
+                    <code style={{ color: 'var(--accent)' }}>{name(r.from)}</code>
+                    <span style={{ margin: '0 4px', color: 'var(--text-faint)' }}>→</span>
+                    <code style={{ color: 'var(--accent)' }}>{name(r.to)}</code>
+                  </td>
+                  <td style={{ textAlign: 'right' }}>{r.appearances}/{total}</td>
+                  <td style={{ textAlign: 'right', color: snrTone(r.fwdAvg) }}>{snrLabel(r.fwdAvg)}</td>
+                  <td style={{ textAlign: 'right', color: snrTone(r.backAvg) }}>{snrLabel(r.backAvg)}</td>
+                  <td style={{ textAlign: 'right', color: snrTone(r.fwdMin) }}>{snrLabel(r.fwdMin)}</td>
+                  <td style={{ textAlign: 'right', color: snrTone(r.backMin) }}>{snrLabel(r.backMin)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p style={{ marginTop: 6, fontSize: 10.5, color: 'var(--text-faint)' }}>
+        Direction arrows show the side from which the SNR was observed (→ = forward, on the way to this peer; ← = return, coming back).
+        Green ≥ 5 dB · yellow −5–5 dB · red below −5 dB. SNRs require firmware that populates <code>snr_towards</code> / <code>snr_back</code>.
+      </p>
     </div>
   );
 }

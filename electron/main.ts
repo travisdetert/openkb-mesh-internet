@@ -149,6 +149,19 @@ app.whenReady().then(async () => {
   await initCodec();
   db = new MeshDatabase();
   console.log('[mesh-internet] db ready at', db.getDbPath());
+
+  // Auto-prune messages older than 30 days on startup. Keeps the SQLite
+  // file from growing forever without surprising the user — most chat
+  // history past a month is just clutter for a "what did they just say"
+  // style app. Per-conversation and clear-all buttons handle the rest.
+  try {
+    const MAX_AGE_DAYS = 30;
+    const cutoff = Date.now() - MAX_AGE_DAYS * 24 * 3600 * 1000;
+    const pruned = db.pruneMessagesOlderThan(cutoff);
+    if (pruned > 0) console.log(`[mesh-internet] pruned ${pruned} message(s) older than ${MAX_AGE_DAYS} days`);
+  } catch (e) {
+    console.warn('[mesh-internet] message prune failed:', e);
+  }
   manager = new MeshManager(db);
 
   // ── Media permissions for voice messages ──────────────────────────
@@ -203,6 +216,8 @@ app.whenReady().then(async () => {
   manager.on('connection-removed', (p) => broadcast('mesh:connectionRemoved', p));
   manager.on('serial-raw', (p) => broadcast('mesh:serialRaw', p));
   manager.on('serial-event', (p) => broadcast('mesh:serialEvent', p));
+  manager.on('messages-cleared', (p) => broadcast('mesh:messagesCleared', p));
+  manager.on('nodedb-cleared',  (p) => broadcast('mesh:nodedbCleared', p));
   // BLE bridge: main asks renderer to write a frame to toRadio, and asks
   // renderer to close GATT on manager-initiated disconnect.
   manager.on('ble-tx-frame', (p) => broadcast('mesh:bleTxFrame', p));
@@ -278,6 +293,57 @@ app.whenReady().then(async () => {
   ipcMain.handle('mesh:reboot',             (_e, args: { connId: string; seconds?: number }) => {
     console.log(`[main] reboot → ${args.connId} (${args.seconds ?? 5}s)`);
     return manager.reboot(args.connId, args.seconds ?? 5);
+  });
+  ipcMain.handle('mesh:purgeNodedb',        (_e, connId: string) => {
+    console.log(`[main] purgeNodedb → ${connId}`);
+    return manager.purgeNodedb(connId);
+  });
+  ipcMain.handle('mesh:setFavoriteNode',    (_e, args: { connId: string; nodeNum: number; favorite: boolean }) => {
+    console.log(`[main] setFavoriteNode → ${args.connId} !${args.nodeNum.toString(16).padStart(8, '0')} = ${args.favorite}`);
+    return manager.setFavoriteNode(args.connId, args.nodeNum, args.favorite);
+  });
+  ipcMain.handle('mesh:clearConversation', (_e, args: { kind: 'channel' | 'dm'; channel?: number; myNum?: number; peer?: number }) => {
+    const removed = manager.clearConversation(args);
+    console.log(`[main] clearConversation ${JSON.stringify(args)} → ${removed} removed`);
+    return removed;
+  });
+  ipcMain.handle('mesh:clearAllMessages', () => {
+    const removed = manager.clearAllMessages();
+    console.log(`[main] clearAllMessages → ${removed} removed`);
+    return removed;
+  });
+  ipcMain.handle('mesh:listAntennaOverrides', () => db.listAntennaOverrides());
+  ipcMain.handle('mesh:setAntennaOverride', (_e, args: { nodeNum: number; dbi: number; notes: string }) => {
+    db.setAntennaOverride(args.nodeNum, args.dbi, args.notes ?? '', Date.now());
+    broadcast('mesh:antennaOverrideChanged', { nodeNum: args.nodeNum, dbi: args.dbi, notes: args.notes ?? '' });
+  });
+  ipcMain.handle('mesh:clearAntennaOverride', (_e, nodeNum: number) => {
+    const ok = db.clearAntennaOverride(nodeNum);
+    if (ok) broadcast('mesh:antennaOverrideChanged', { nodeNum, dbi: null, notes: '' });
+    return ok;
+  });
+  // Owned-devices roster (per-hwModel ownership of radio models).
+  ipcMain.handle('mesh:listOwnedDevices', () => db.listOwnedDevices());
+  ipcMain.handle('mesh:setOwnedDevice', (_e, args: { hwModel: number; quantity: number; notes: string }) => {
+    db.setOwnedDevice(args.hwModel, args.quantity, args.notes ?? '', Date.now());
+    broadcast('mesh:ownedDeviceChanged', { hwModel: args.hwModel, quantity: args.quantity, notes: args.notes ?? '' });
+  });
+  ipcMain.handle('mesh:clearOwnedDevice', (_e, hwModel: number) => {
+    const ok = db.clearOwnedDevice(hwModel);
+    if (ok) broadcast('mesh:ownedDeviceChanged', { hwModel, quantity: 0, notes: '' });
+    return ok;
+  });
+  // Owned-antennas roster (per-catalog-id ownership). antennaId is an
+  // app-side identifier from src/lib/antenna-catalog.ts.
+  ipcMain.handle('mesh:listOwnedAntennas', () => db.listOwnedAntennas());
+  ipcMain.handle('mesh:setOwnedAntenna', (_e, args: { antennaId: string; quantity: number; notes: string }) => {
+    db.setOwnedAntenna(args.antennaId, args.quantity, args.notes ?? '', Date.now());
+    broadcast('mesh:ownedAntennaChanged', { antennaId: args.antennaId, quantity: args.quantity, notes: args.notes ?? '' });
+  });
+  ipcMain.handle('mesh:clearOwnedAntenna', (_e, antennaId: string) => {
+    const ok = db.clearOwnedAntenna(antennaId);
+    if (ok) broadcast('mesh:ownedAntennaChanged', { antennaId, quantity: 0, notes: '' });
+    return ok;
   });
   ipcMain.handle('mesh:lastRefreshAt',      (_e, connId: string) => manager.getLastRefreshAt(connId));
   ipcMain.handle('mesh:getAutoConnect',     () => manager.getAutoConnect());

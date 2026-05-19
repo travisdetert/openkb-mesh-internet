@@ -82,7 +82,13 @@ const NETWORK_ADDRESS_MODES = [
 
 type ConfigSection = 'lora' | 'device' | 'position' | 'power' | 'bluetooth' | 'display' | 'network';
 
-export function SettingsPanel({ state }: { state: ConnectionState }) {
+/**
+ * `embedded` = true when this panel renders inline inside the Connect
+ * wizard (under its own section header). In that mode the standalone
+ * page chrome — title, intro paragraph, and "EDITING" target picker — is
+ * redundant noise, so we hide it.
+ */
+export function SettingsPanel({ state, embedded = false }: { state: ConnectionState; embedded?: boolean }) {
   const [section, setSection] = useState<ConfigSection>('lora');
   const isReady = state.status === 'ready';
   const { connections, activeConnId, setActiveConnId } = useMeshContext();
@@ -92,14 +98,20 @@ export function SettingsPanel({ state }: { state: ConnectionState }) {
   const radioLabel = myNode?.shortName || myNode?.longName || state.portPath?.split('/').pop() || activeConnId || 'radio';
 
   return (
-    <div className="page">
-      <h1 className="page-title">Settings</h1>
-      <p className="page-sub">
-        Change your radio's configuration directly. Most changes trigger a device reboot (~5–10 s) — this app will auto-reconnect and resync.
-      </p>
+    <div className={embedded ? 'page page-embedded' : 'page'}>
+      {!embedded && <>
+        <h1 className="page-title">Settings</h1>
+        <p className="page-sub">
+          Change your radio's configuration directly. Most changes trigger a device reboot (~5–10 s) — this app will auto-reconnect and resync.
+        </p>
+      </>}
 
-      {/* Active radio header — critical with multi-radio: every Apply goes to this one */}
-      {connections.length > 0 && (
+      {/* Active radio header — only useful as a standalone page. When embedded
+       *  in the Connect wizard, the active radio is already named in the
+       *  chip strip + page context above. For multi-radio inline use we
+       *  still surface the picker so the user can switch which radio
+       *  they're configuring without leaving Connect. */}
+      {!embedded && connections.length > 0 && (
         <div className="settings-target">
           <span className="settings-target-label">EDITING</span>
           {connections.length > 1 ? (

@@ -3,6 +3,7 @@ import { LORA_PRESETS, DEFAULT_PRESET } from '../../data/lora-presets';
 import { REGIONS } from '../../data/regions';
 import type { TabId } from '../TopNav';
 import { LearningModeBadge, LearningSeeAlso } from './LearningChrome';
+import { useAntennaOverrides } from '../../hooks/useAntennaOverrides';
 
 const REGION_MAP_FROM_RADIO: Record<string, string> = {
   US: 'US', EU_433: 'EU433', EU_868: 'EU868', CN: 'CN', JP: 'JP', ANZ: 'AU',
@@ -49,11 +50,13 @@ type Tab = 'calc' | 'perlink' | 'compare';
 
 export function LinkBudgetPanel({ nodes, state, myNode, onMessageNode, go }: Props) {
   const [tab, setTab] = useState<Tab>('calc');
+  const { gainForNode } = useAntennaOverrides();
   const [presetId, setPresetId] = useState(DEFAULT_PRESET.id);
   const [regionId, setRegionId] = useState('US');
   const [txPower, setTxPower] = useState(20);
   const [txGain, setTxGain] = useState(2.5);
   const [rxGain, setRxGain] = useState(2.5);
+  const [txGainAutofilled, setTxGainAutofilled] = useState(false);
   const [feedlineLoss, setFeedlineLoss] = useState(1);
   const [obstructionLoss, setObstructionLoss] = useState(0);
   const [fade, setFade] = useState(10);
@@ -71,6 +74,18 @@ export function LinkBudgetPanel({ nodes, state, myNode, onMessageNode, go }: Pro
     if (cfg.txPower && cfg.txPower > 0) setTxPower(cfg.txPower);
     setAutofilled(true);
   }, [state.loraConfig, autofilled]);
+
+  // Auto-fill the TX antenna gain from "your radio" — uses the override
+  // if you've set one, otherwise the catalog stock value. Fires once,
+  // doesn't fight user edits afterward.
+  useEffect(() => {
+    if (txGainAutofilled || !myNode) return;
+    const g = gainForNode(myNode);
+    if (g.source !== 'fallback') {
+      setTxGain(g.dbi);
+      setTxGainAutofilled(true);
+    }
+  }, [myNode, gainForNode, txGainAutofilled]);
 
   const preset = LORA_PRESETS.find((p) => p.id === presetId)!;
   const region = REGIONS.find((r) => r.id === regionId)!;

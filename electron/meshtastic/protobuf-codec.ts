@@ -259,7 +259,16 @@ export interface MeshPacket {
     numTotalNodes?: number;
   };
   routing?: { errorReason: number };
-  traceroute?: { route: number[] };
+  traceroute?: {
+    route: number[];
+    /** SNR (×4 fixed-point in the proto; we divide to get dB) of each hop
+     *  on the way out — index aligned with `route`. */
+    snrTowards: number[];
+    /** Node nums on the return path (populated by the destination's reply). */
+    routeBack: number[];
+    /** SNR on the return path, index aligned with `routeBack`. */
+    snrBack: number[];
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -654,7 +663,16 @@ function decodeAppPayload(pkt: MeshPacket, portnum: number, payload: Uint8Array)
       }
       case TRACEROUTE: {
         const rd = fromBinary!(Proto.Mesh.RouteDiscoverySchema, payload) as any;
-        pkt.traceroute = { route: Array.isArray(rd.route) ? rd.route : [] };
+        // Meshtastic stores SNR as int32 with one decimal of precision
+        // baked in by multiplying by 4 (per the proto convention). We
+        // divide here so the renderer sees dB directly.
+        const decodeSnrs = (arr: unknown): number[] => Array.isArray(arr) ? (arr as number[]).map((s) => s / 4) : [];
+        pkt.traceroute = {
+          route:      Array.isArray(rd.route)     ? (rd.route as number[])     : [],
+          snrTowards: decodeSnrs(rd.snrTowards),
+          routeBack:  Array.isArray(rd.routeBack) ? (rd.routeBack as number[]) : [],
+          snrBack:    decodeSnrs(rd.snrBack),
+        };
         break;
       }
     }
@@ -1089,6 +1107,36 @@ export function decodeChannelSetUrl(url: string): { channels: Array<{ name: stri
 }
 
 /**
+ * Wipe the radio's local nodeDB. Firmware drops every peer it has stored
+ * (except itself). Useful when the nodeDB has accumulated stale or
+ * duplicated entries — peers will repopulate over time from their next
+ * NodeInfo broadcasts.
+ *
+ * `to` MUST be the radio's own node number; admin messages are local.
+ */
+export function encodeToRadio_NodedbReset(to: number): Uint8Array {
+  ensureReady();
+  const admin = create!(Proto.Admin.AdminMessageSchema, {
+    payloadVariant: { case: 'nodedbReset', value: true },
+  });
+  const data = create!(Proto.Mesh.DataSchema, {
+    portnum: PORTNUM_ADMIN,
+    payload: toBinary!(Proto.Admin.AdminMessageSchema, admin),
+    wantResponse: false,
+  });
+  const packet = create!(Proto.Mesh.MeshPacketSchema, {
+    to,
+    wantAck: false,
+    id: (Math.random() * 0xffffffff) >>> 0,
+    payloadVariant: { case: 'decoded', value: data },
+  });
+  const msg = create!(Proto.Mesh.ToRadioSchema, {
+    payloadVariant: { case: 'packet', value: packet },
+  });
+  return toBinary!(Proto.Mesh.ToRadioSchema, msg);
+}
+
+/**
  * Schedule a device reboot via the admin port. `seconds` = how long the
  * firmware should wait before rebooting (5–10s is a friendly default —
  * gives the radio time to flush any pending traffic and the host time to
@@ -1097,6 +1145,38 @@ export function decodeChannelSetUrl(url: string): { channels: Array<{ name: stri
  * `to` MUST be the radio's own node number; admin messages are addressed
  * to the local node.
  */
+/**
+ * Mark `nodeNum` as a favorite (or un-favorite it) on this radio's nodeDB.
+ * Meshtastic firmware persists this flag and even has a config option to
+ * preserve favorites through factory reset. Affects ordering in the
+ * official app and (in some firmware) message-priority routing.
+ *
+ * `to` MUST be the radio's own node number — admin messages are local.
+ */
+export function encodeToRadio_SetFavorite(to: number, nodeNum: number, favorite: boolean): Uint8Array {
+  ensureReady();
+  const admin = create!(Proto.Admin.AdminMessageSchema, {
+    payloadVariant: favorite
+      ? { case: 'setFavoriteNode',    value: nodeNum }
+      : { case: 'removeFavoriteNode', value: nodeNum },
+  });
+  const data = create!(Proto.Mesh.DataSchema, {
+    portnum: PORTNUM_ADMIN,
+    payload: toBinary!(Proto.Admin.AdminMessageSchema, admin),
+    wantResponse: false,
+  });
+  const packet = create!(Proto.Mesh.MeshPacketSchema, {
+    to,
+    wantAck: false,
+    id: (Math.random() * 0xffffffff) >>> 0,
+    payloadVariant: { case: 'decoded', value: data },
+  });
+  const msg = create!(Proto.Mesh.ToRadioSchema, {
+    payloadVariant: { case: 'packet', value: packet },
+  });
+  return toBinary!(Proto.Mesh.ToRadioSchema, msg);
+}
+
 export function encodeToRadio_Reboot(to: number, seconds: number): Uint8Array {
   ensureReady();
   const admin = create!(Proto.Admin.AdminMessageSchema, {

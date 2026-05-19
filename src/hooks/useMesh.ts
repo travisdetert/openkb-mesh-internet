@@ -208,10 +208,40 @@ export function useMesh() {
         ...v,
         messages: v.messages.map((x) =>
           x.id === message.id && x.from === message.from
-            ? { ...x, ackStatus: message.ackStatus, ackError: message.ackError }
+            ? { ...x, ackStatus: message.ackStatus, ackError: message.ackError, ackFromNode: message.ackFromNode }
             : x,
         ),
       }));
+    });
+
+    // When the user purges a radio's nodeDB, mirror the wipe in our
+    // per-connection state so the Nodes table empties immediately
+    // (peers will repopulate from future NodeInfo broadcasts).
+    const offNodedbCleared = window.mesh.onNodedbCleared(({ connId, myNum }) => {
+      updateView(connId, (v) => ({
+        ...v,
+        nodes: v.nodes.filter((n) => n.num === myNum), // keep only "me"
+      }));
+    });
+
+    // When main wipes messages from the DB, mirror the deletion in our
+    // per-connection state so the chat updates instantly without needing
+    // a reload.
+    const offMessagesCleared = window.mesh.onMessagesCleared(({ connId, info }) => {
+      updateView(connId, (v) => {
+        if (info.kind === 'all') return { ...v, messages: [] };
+        if (info.kind === 'channel' && info.channel !== undefined) {
+          return { ...v, messages: v.messages.filter((m) => !(m.channel === info.channel && m.to === 0xffffffff)) };
+        }
+        if (info.kind === 'dm' && info.peer !== undefined) {
+          const myNum = v.state.myInfo?.myNodeNum;
+          if (myNum === undefined) return v;
+          return { ...v, messages: v.messages.filter((m) =>
+            !((m.from === myNum && m.to === info.peer) || (m.from === info.peer && m.to === myNum)),
+          ) };
+        }
+        return v;
+      });
     });
 
     const offPacket = window.mesh.onPacket(({ connId, packet }) => {
@@ -282,6 +312,8 @@ export function useMesh() {
       offNode();
       offMessage();
       offMessageStatus();
+      offMessagesCleared();
+      offNodedbCleared();
       offPacket();
       offUtil();
       offTrSent();

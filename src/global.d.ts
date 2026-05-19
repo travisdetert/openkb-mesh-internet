@@ -193,6 +193,11 @@ declare global {
     ackStatus?: 'received' | 'pending' | 'acked' | 'failed';
     /** When failed, the Meshtastic Routing.Error code. 3 = TIMEOUT (also used for our local 60s timer). */
     ackError?: number;
+    /** Outgoing-only: nodeNum of whoever actually sent the Routing ack.
+     *  When equal to `to`, the destination replied directly (high
+     *  confidence delivered). Otherwise a relay acked on the path,
+     *  which is *not* proof the destination decoded the payload. */
+    ackFromNode?: number;
     sentAt?: number;
   }
 
@@ -237,6 +242,12 @@ declare global {
     from: number;
     to: number;
     route: number[];
+    /** Per-hop SNR on the way out (dB), index-aligned with `route`. */
+    snrTowards: number[];
+    /** Route taken on the return path. */
+    routeBack: number[];
+    /** Per-hop SNR on the return path (dB), index-aligned with `routeBack`. */
+    snrBack: number[];
     rxRssi: number;
     rxSnr: number;
     hopStart: number;
@@ -367,6 +378,39 @@ declare global {
      *  the radio isn't ready. Connection will drop and (if auto-connect is
      *  on) come back on its own once the device re-enumerates. */
     reboot:             (args: { connId: string; seconds?: number }) => Promise<boolean>;
+    /** Wipe the radio's nodeDB (firmware-side) + clear our local
+     *  in-memory cache for that radio. Peers will repopulate from
+     *  future NodeInfo broadcasts. Returns false if not ready. */
+    purgeNodedb:        (connId: string) => Promise<boolean>;
+    /** Toggle the is_favorite flag for a peer in this radio's nodeDB. The
+     *  flag persists on the radio (and optionally through factory reset). */
+    setFavoriteNode:    (args: { connId: string; nodeNum: number; favorite: boolean }) => Promise<boolean>;
+    /** Delete a single conversation from local DB + every controller's
+     *  in-memory list. Returns the number of rows removed. */
+    clearConversation:  (args: { kind: 'channel' | 'dm'; channel?: number; myNum?: number; peer?: number }) => Promise<number>;
+    /** Wipe every locally-stored message. No undo. Returns the row count. */
+    clearAllMessages:   () => Promise<number>;
+    /** Snapshot every user-supplied per-node antenna gain override. */
+    listAntennaOverrides: () => Promise<Array<{ node_num: number; dbi: number; notes: string; updated_at: number }>>;
+    /** Set (or update) the antenna dBi we should use for this node's
+     *  link-budget math. Overrides the catalog stockAntennaDbi for that
+     *  node's hwModel. */
+    setAntennaOverride:   (args: { nodeNum: number; dbi: number; notes: string }) => Promise<void>;
+    /** Remove an override — math reverts to catalog stockAntennaDbi. */
+    clearAntennaOverride: (nodeNum: number) => Promise<boolean>;
+    // ── Owned rosters ────────────────────────────────────────────────
+    /** Snapshot every device-model the user has marked as owned. */
+    listOwnedDevices: () => Promise<Array<{ hw_model: number; quantity: number; notes: string; updated_at: number }>>;
+    /** Set (or update) ownership for an hwModel. Quantity defaults to 1. */
+    setOwnedDevice:   (args: { hwModel: number; quantity: number; notes: string }) => Promise<void>;
+    /** Drop an hwModel from the owned roster. */
+    clearOwnedDevice: (hwModel: number) => Promise<boolean>;
+    /** Snapshot every antenna model the user has marked as owned. */
+    listOwnedAntennas: () => Promise<Array<{ antenna_id: string; quantity: number; notes: string; updated_at: number }>>;
+    /** Set (or update) ownership for an antenna catalog id. */
+    setOwnedAntenna:   (args: { antennaId: string; quantity: number; notes: string }) => Promise<void>;
+    /** Drop an antenna from the owned roster. */
+    clearOwnedAntenna: (antennaId: string) => Promise<boolean>;
     /** Open a renderer-owned BLE session and register it with the manager.
      *  Returns the connId to pair with subsequent bleRxFrame calls. */
     bleStartSession:    (deviceName: string) => Promise<string>;
@@ -402,6 +446,11 @@ declare global {
     onConnectionRemoved: (cb: (p: { connId: string }) => void) => () => void;
     onSerialRaw: (cb: (p: { connId: string; direction: 'rx' | 'tx'; at: number; bytes: string }) => void) => () => void;
     onSerialEvent: (cb: (p: { connId: string; event: SerialEvent }) => void) => () => void;
+    onMessagesCleared: (cb: (p: { connId: string; info: { kind: 'channel' | 'dm' | 'all'; channel?: number; peer?: number } }) => void) => () => void;
+    onNodedbCleared:   (cb: (p: { connId: string; myNum: number }) => void) => () => void;
+    onAntennaOverrideChanged: (cb: (p: { nodeNum: number; dbi: number | null; notes: string }) => void) => () => void;
+    onOwnedDeviceChanged:  (cb: (p: { hwModel: number; quantity: number; notes: string }) => void) => () => void;
+    onOwnedAntennaChanged: (cb: (p: { antennaId: string; quantity: number; notes: string }) => void) => () => void;
     onBleTxFrame: (cb: (p: { connId: string; bytes: string }) => void) => () => void;
     onBleDisconnectRequest: (cb: (p: { connId: string }) => void) => () => void;
   }

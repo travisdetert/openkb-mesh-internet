@@ -1070,17 +1070,39 @@ function _Conversations({
               )}
             </div>
           </div>
-          {effective?.kind === 'dm' && (
-            <button
-              className="ghost"
-              style={{ padding: '4px 10px', fontSize: 12 }}
-              onClick={() => connId && window.mesh.sendTraceroute({ connId, to: (effective as any).nodeNum })}
-              disabled={state.status !== 'ready' || !connId}
-              title="Send a traceroute to this node"
-            >
-              Traceroute
-            </button>
-          )}
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            {effective?.kind === 'dm' && (
+              <button
+                className="ghost"
+                style={{ padding: '4px 10px', fontSize: 12 }}
+                onClick={() => connId && window.mesh.sendTraceroute({ connId, to: (effective as any).nodeNum })}
+                disabled={state.status !== 'ready' || !connId}
+                title="Send a traceroute to this node"
+              >
+                Traceroute
+              </button>
+            )}
+            {effective && filtered.length > 0 && (
+              <button
+                className="ghost"
+                style={{ padding: '4px 10px', fontSize: 12 }}
+                onClick={async () => {
+                  const label = effective.kind === 'channel'
+                    ? `channel ${effective.index}`
+                    : longNameFor(nodes, effective.nodeNum);
+                  if (!confirm(`Clear ${filtered.length} message${filtered.length === 1 ? '' : 's'} in this conversation (${label})?\n\nDeletes them from this app's local database and memory. The radio's own message buffer is not affected. No undo.`)) return;
+                  if (effective.kind === 'channel') {
+                    await window.mesh.clearConversation({ kind: 'channel', channel: effective.index });
+                  } else {
+                    await window.mesh.clearConversation({ kind: 'dm', myNum, peer: effective.nodeNum });
+                  }
+                }}
+                title="Wipe this conversation from local storage. The radio's own buffer is firmware-managed and not affected."
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </div>
 
         <div ref={scrollRef} className="chat-scroll">
@@ -1566,6 +1588,13 @@ function ChatBubble({
   onResend: (m: TextMessage) => void;
   onReply: (m: TextMessage) => void;
 }) {
+  // Per-bubble disclosure for the full delivery timeline. Auto-opens on
+  // failed messages so the diagnostic surfaces without a click.
+  const [showFlow, setShowFlow] = useState(m.ackStatus === 'failed');
+  useEffect(() => {
+    // If status flips to failed after mount, open the flow automatically.
+    if (m.ackStatus === 'failed') setShowFlow(true);
+  }, [m.ackStatus]);
   // If the message starts with "> " on its first line, split that off as a
   // styled quote block. This is the same convention every chat app uses
   // and adds zero metadata to the wire payload.
@@ -1637,11 +1666,67 @@ function ChatBubble({
               </span>
             )}
             {isMe && ack === 'pending' && <span className="ack ack-pending">… pending</span>}
-            {isMe && ack === 'acked' && <span className="ack ack-acked">✓ delivered</span>}
+            {isMe && ack === 'acked' && (() => {
+              // What "delivered" actually means depends on who sent the
+              // Routing ack: only an ack from the destination is real
+              // proof of receipt. Anything else is a relay's implicit ack.
+              const ackFrom = m.ackFromNode;
+              const isBroadcast = m.to === 0xffffffff;
+              if (isBroadcast) {
+                return (
+                  <span
+                    className="ack ack-acked"
+                    style={{ color: 'var(--warn)' }}
+                    title="A neighbour retransmitted your broadcast — proof at least one node heard you. Broadcasts have no per-recipient ack, so 'who received it' can only be confirmed by their reply."
+                  >
+                    ✓ relayed
+                  </span>
+                );
+              }
+              if (ackFrom !== undefined && ackFrom === m.to) {
+                return (
+                  <span
+                    className="ack ack-acked"
+                    title={`Routing ack came from the destination (!${(ackFrom >>> 0).toString(16).padStart(8, '0')}). High confidence the recipient decoded your message.`}
+                  >
+                    ✓ delivered
+                  </span>
+                );
+              }
+              if (ackFrom !== undefined) {
+                return (
+                  <span
+                    className="ack ack-acked"
+                    style={{ color: 'var(--warn)' }}
+                    title={`A relay (!${(ackFrom >>> 0).toString(16).padStart(8, '0')}), NOT the destination, sent the routing ack. The packet made it that far but the destination's decode is unconfirmed. See Learn → Acks & Asymmetry.`}
+                  >
+                    ✓ acked by relay
+                  </span>
+                );
+              }
+              return (
+                <span
+                  className="ack ack-acked"
+                  style={{ color: 'var(--warn)' }}
+                  title="Routing ack received but we don't know which node sent it. Could be the destination, could be a relay."
+                >
+                  ✓ acked
+                </span>
+              );
+            })()}
             {isMe && failed && (
               <span className="ack ack-failed">✗ {failure?.label ?? 'failed'}</span>
             )}
             {isMe && failed && <button className="resend-btn" onClick={() => onResend(m)}>resend</button>}
+            {isMe && (
+              <button
+                className="flow-toggle"
+                onClick={() => setShowFlow((v) => !v)}
+                title="Show or hide the per-step delivery flow (sent → echo → relay → ack) for this message."
+              >
+                {showFlow ? '▲' : '▼'} flow
+              </button>
+            )}
             <button
               className="reply-btn"
               onClick={() => onReply(m)}
@@ -1651,6 +1736,7 @@ function ChatBubble({
             </button>
           </div>
         )}
+        {isMe && showFlow && <DeliveryFlow m={m} />}
         {isLastInGroup && failed && failure && (
           <div className="chat-failure">
             <div className="chat-failure-explainer">{failure.explainer}</div>
@@ -1662,6 +1748,102 @@ function ChatBubble({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Per-message delivery flow shown inline under a chat bubble (instead of
+ * forcing the user to jump to the Delivery panel for the same info). Pulls
+ * the matching PacketTrace from the active connection and renders the
+ * lifecycle events as a compact stepped list. Same data the Delivery panel
+ * shows, just rendered in a chat-context style.
+ */
+function DeliveryFlow({ m }: { m: DisplayMessage }) {
+  const { connections, activeConnId } = useMeshContext();
+  const conn = connections.find((c) => c.connId === activeConnId);
+  const trace = conn?.traces.find((t) => t.packetId === m.id);
+  const sentAt = m.sentAt ?? m.rxTime * 1000;
+  const fmtAbs = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: false });
+  const fmtDelta = (ms: number) => {
+    const ds = (ms - sentAt) / 1000;
+    if (ds < 0) return '0.0s';
+    if (ds < 60) return `+${ds.toFixed(1)}s`;
+    return `+${Math.floor(ds / 60)}m${Math.round(ds % 60)}s`;
+  };
+  const myNum = conn?.state.myInfo?.myNodeNum;
+  const peerName = (num?: number) => {
+    if (num === undefined) return '?';
+    if (num === myNum) return 'me';
+    const n = conn?.nodes.find((x) => x.num === num);
+    return n?.shortName || `!${(num >>> 0).toString(16).padStart(8, '0').slice(-4)}`;
+  };
+  const events = trace ? [...trace.events].sort((a, b) => a.ts - b.ts) : [];
+  const isBroadcast = m.to === 0xffffffff || m.to === undefined;
+
+  const echo = events.find((e) => e.kind === 'echo');
+  const relays = events.filter((e) => e.kind === 'relay');
+  const terminal = events.find((e) => e.kind === 'ack' || e.kind === 'nak' || e.kind === 'timeout');
+
+  return (
+    <div className="chat-flow">
+      <div className="chat-flow-step chat-flow-ok">
+        <span className="chat-flow-glyph">●</span>
+        <span>sent over USB <span className="chat-flow-time">· {fmtAbs(sentAt)}</span></span>
+      </div>
+      {echo && (
+        <div className="chat-flow-step chat-flow-ok">
+          <span className="chat-flow-glyph">↑</span>
+          <span>radio confirmed TX <span className="chat-flow-time">· {fmtDelta(echo.ts)}</span></span>
+        </div>
+      )}
+      {relays.map((e, i) => (
+        <div key={`relay-${i}`} className="chat-flow-step chat-flow-relay">
+          <span className="chat-flow-glyph">↻</span>
+          <span>
+            relayed by <strong>{peerName(e.fromNode)}</strong>
+            {e.snr !== undefined && e.snr !== 0 && <> · SNR {e.snr.toFixed(1)}</>}
+            {e.rssi !== undefined && e.rssi !== 0 && <> · RSSI {e.rssi}</>}
+            {e.hopStart !== undefined && e.hopLimit !== undefined && <> · hop {e.hopStart - e.hopLimit}/{e.hopStart}</>}
+            <span className="chat-flow-time"> · {fmtDelta(e.ts)}</span>
+          </span>
+        </div>
+      ))}
+      {!isBroadcast && m.ackStatus === 'acked' && (() => {
+        const isRelay = m.ackFromNode !== undefined && m.ackFromNode !== m.to;
+        return (
+          <div className={'chat-flow-step ' + (isRelay ? 'chat-flow-relay' : 'chat-flow-ok')}>
+            <span className="chat-flow-glyph">✓</span>
+            <span>
+              {isRelay
+                ? <>ack came from <strong>{peerName(m.ackFromNode)}</strong> (relay) — destination decode unconfirmed</>
+                : <>ack from <strong>{peerName(m.ackFromNode ?? m.to)}</strong> (destination)</>}
+              {terminal && <span className="chat-flow-time"> · {fmtDelta(terminal.ts)}</span>}
+            </span>
+          </div>
+        );
+      })()}
+      {!isBroadcast && m.ackStatus === 'failed' && (
+        <div className="chat-flow-step chat-flow-bad">
+          <span className="chat-flow-glyph">✗</span>
+          <span>
+            {m.ackError === 3 ? 'no ack within 60s (timeout)' : `routing nak (code ${m.ackError ?? '?'})`}
+            {terminal && <span className="chat-flow-time"> · {fmtDelta(terminal.ts)}</span>}
+          </span>
+        </div>
+      )}
+      {!isBroadcast && m.ackStatus === 'pending' && (
+        <div className="chat-flow-step chat-flow-pending">
+          <span className="chat-flow-glyph">⏳</span>
+          <span>waiting for ack <span className="chat-flow-time">· times out at 60s</span></span>
+        </div>
+      )}
+      {isBroadcast && (
+        <div className="chat-flow-step chat-flow-pending">
+          <span className="chat-flow-glyph">·</span>
+          <span>broadcast — no per-recipient ack; relays above are implicit confirmation</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -1990,12 +2172,29 @@ function ActivityView({
                 <td style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-faint)' }}>
                   {!isMe && m.rxRssi !== 0 && <>{m.rxRssi} dBm · SNR {m.rxSnr.toFixed(1)} · </>}
                   {!isMe && m.hopStart > 0 && <>hop {m.hopStart - m.hopLimit}/{m.hopStart}</>}
-                  {isMe && m.ackStatus && (
-                    <span className={`ack ack-${m.ackStatus}`} title={m.ackStatus === 'failed' ? describeAckError(m.ackError)?.explainer : undefined}>
-                      {ackGlyph(m.ackStatus)}{' '}
-                      {m.ackStatus === 'failed' ? (describeAckError(m.ackError)?.label ?? 'failed') : m.ackStatus === 'acked' ? 'delivered' : m.ackStatus}
-                    </span>
-                  )}
+                  {isMe && m.ackStatus && (() => {
+                    const isBroadcast = m.to === 0xffffffff;
+                    const ackLabel =
+                      m.ackStatus === 'failed' ? (describeAckError(m.ackError)?.label ?? 'failed')
+                      : m.ackStatus === 'acked'
+                        ? (isBroadcast ? 'relayed'
+                          : m.ackFromNode !== undefined && m.ackFromNode === m.to ? 'delivered'
+                          : m.ackFromNode !== undefined ? 'acked by relay'
+                          : 'acked')
+                      : m.ackStatus;
+                    return (
+                      <span
+                        className={`ack ack-${m.ackStatus}`}
+                        title={m.ackStatus === 'failed'
+                          ? describeAckError(m.ackError)?.explainer
+                          : m.ackStatus === 'acked' && m.ackFromNode !== undefined && m.ackFromNode !== m.to && !isBroadcast
+                            ? `Ack came from a relay (!${(m.ackFromNode >>> 0).toString(16).padStart(8, '0')}), not the destination. The packet got that far, but the destination's decode is unconfirmed.`
+                            : undefined}
+                      >
+                        {ackGlyph(m.ackStatus)}{' '}{ackLabel}
+                      </span>
+                    );
+                  })()}
                 </td>
               </tr>
             );
@@ -2063,6 +2262,8 @@ function SettingsView({ state }: { state: ConnectionState }) {
             <dt>Retry timeout</dt><dd>60 s before a DM is marked failed</dd>
           </dl>
         </div>
+
+        <ClearAllMessagesCard />
       </div>
 
       <div>
@@ -2073,6 +2274,40 @@ function SettingsView({ state }: { state: ConnectionState }) {
           <p style={{ margin: 0 }}><strong>Channel keys.</strong> Channel encryption keys are configured on the radio itself. This app reads them via <code>want_config_id</code> but does not let you change them — that's a job for the official setup app, where typo-protection is more important than aesthetic.</p>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Wipe-everything card on the Chat → Settings tab. Hits the DB and every
+ * controller's in-memory list. No undo — confirms first. Auto-prune (30
+ * days) also runs at app startup; this is the manual override.
+ */
+function ClearAllMessagesCard() {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const onClick = async () => {
+    if (!confirm('Wipe EVERY message from this app\'s local database?\n\n• Affects every conversation, every channel, every connected radio.\n• The radio\'s own message buffer (firmware-managed) is not touched.\n• No undo.')) return;
+    setBusy(true); setMsg('');
+    try {
+      const n = await window.mesh.clearAllMessages();
+      setMsg(`Removed ${n} message${n === 1 ? '' : 's'}.`);
+    } catch (e: any) {
+      setMsg('Error: ' + (e?.message ?? String(e)));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="info-card" style={{ borderLeftColor: 'var(--bad)' }}>
+      <p style={{ margin: '0 0 6px' }}><strong style={{ color: 'var(--bad)' }}>Clear all chat history</strong></p>
+      <p style={{ margin: '0 0 10px', fontSize: 12, color: 'var(--text-dim)' }}>
+        Deletes every message from the local SQLite store and every controller's in-memory list. The radio's firmware-side buffer is independent and not affected. Auto-prune drops messages older than 30 days on app startup; this button is the manual nuke.
+      </p>
+      <button className="ghost" onClick={onClick} disabled={busy} style={{ borderColor: 'var(--bad)', color: 'var(--bad)' }}>
+        {busy ? 'Clearing…' : 'Clear all messages'}
+      </button>
+      {msg && <span style={{ marginLeft: 10, fontSize: 12, color: msg.startsWith('Error') ? 'var(--bad)' : 'var(--good)' }}>{msg}</span>}
     </div>
   );
 }
@@ -2384,10 +2619,49 @@ function DeliveryProbe({
     return null;
   }, [filtered, myNum]);
 
+  // Pull the per-packet trace for this send if we have one. The controller
+  // records every lifecycle event — sent / echo / relay / ack / nak / timeout —
+  // with millisecond timestamps, which lets us render an actual timeline
+  // instead of just "did the radio say it acked?".
+  const activeConn = connections.find((c) => c.connId === activeConnId);
+  const trace = lastMine ? activeConn?.traces.find((t) => t.packetId === lastMine.id) : undefined;
+
   if (!lastMine || !effective) return null;
 
   const others = connections.filter((c) => c.connId !== activeConnId && c.state.status === 'ready');
-  const sinceSec = Math.max(0, (Date.now() - (lastMine.sentAt ?? lastMine.rxTime * 1000)) / 1000);
+  const sentAt = lastMine.sentAt ?? lastMine.rxTime * 1000;
+  const sinceSec = Math.max(0, (Date.now() - sentAt) / 1000);
+  const isBroadcast = lastMine.to === 0xffffffff || lastMine.to === undefined;
+  const fmtAbs = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: false });
+  const fmtDelta = (ms: number) => {
+    const ds = (ms - sentAt) / 1000;
+    if (ds < 0) return '0.0s';
+    if (ds < 60) return `+${ds.toFixed(1)}s`;
+    return `+${Math.floor(ds / 60)}m${Math.round(ds % 60)}s`;
+  };
+  const nodeName = (num?: number) => {
+    if (num === undefined) return '';
+    const me = num === myNum;
+    if (me) return 'your radio';
+    const n = activeConn?.nodes.find((x) => x.num === num);
+    return n?.shortName || `!${(num >>> 0).toString(16).padStart(8, '0').slice(-4)}`;
+  };
+
+  // Re-send the same text with a fresh packetId. Meshtastic firmware
+  // already retries a wantAck packet internally a few times before giving
+  // up, so a manual retry generally only helps if the previous attempt
+  // hit the 60s app-side timeout, or if conditions have actually changed
+  // (different antenna, different position, fresh window of channel time).
+  const onRetry = async () => {
+    if (!activeConnId) return;
+    await window.mesh.sendText({
+      connId: activeConnId,
+      text: lastMine.text,
+      to: isBroadcast ? undefined : lastMine.to,
+      channel: lastMine.channel,
+      wantAck: !isBroadcast,
+    });
+  };
 
   // For each "other" radio, two independent checks:
   // (1) Did its raw RX stream show our packet? (proves the radio decoded it off the air)
@@ -2405,28 +2679,152 @@ function DeliveryProbe({
     return { connId: c.connId, name: cName, match, inMessages };
   });
 
+  // Pull the timeline events from the trace, sorted oldest → newest. If
+  // we have no trace yet, we synthesise just a "sent" entry so the UI
+  // still tells the user *something* happened.
+  const traceEvents = trace ? [...trace.events].sort((a, b) => a.ts - b.ts) : [];
+
   return (
     <div className="chat-probe">
-      <div className="chat-probe-label">DELIVERY PROBE</div>
+      <div className="chat-probe-label" style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+        <span>DELIVERY PROBE</span>
+        <span style={{ fontSize: 10, color: 'var(--text-faint)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
+          packet <code>!{(lastMine.id >>> 0).toString(16).padStart(8, '0').slice(-4)}</code> · sent {fmtAbs(sentAt)} · {sinceSec.toFixed(0)}s ago
+        </span>
+        {lastMine.ackStatus === 'failed' && !isBroadcast && (
+          <button
+            className="ghost"
+            style={{ padding: '2px 10px', fontSize: 11, marginLeft: 'auto' }}
+            onClick={onRetry}
+            title="Re-send the same text with a fresh packet id. Use this when conditions may have changed (you moved, plugged in an antenna, the other node just rebooted) — Meshtastic firmware already retries internally up to a few times before reporting failure to us."
+          >
+            ↻ Retry
+          </button>
+        )}
+      </div>
       <div className="chat-probe-body">
+
+        {/* Step 1: Sent over USB. Always succeeds if we have a packet id. */}
         <div className="chat-probe-row">
           <span className="chat-probe-step ok">✓</span>
-          <span>Sent to radio (over USB) — packet id <code>!{(lastMine.id >>> 0).toString(16).padStart(8, '0').slice(-4)}</code></span>
+          <div>
+            <div>
+              Sent to radio (over USB) <span style={{ color: 'var(--text-faint)' }}>· {fmtAbs(sentAt)}</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+              Why this matters · the app framed your text and wrote it to the serial port. From here the radio owns it — if anything fails later, it's RF, not USB.
+            </div>
+          </div>
         </div>
-        <div className="chat-probe-row">
-          <span className={'chat-probe-step ' + (lastMine.ackStatus === 'acked' ? 'ok' : lastMine.ackStatus === 'failed' ? 'bad' : 'pending')}>
-            {lastMine.ackStatus === 'acked' ? '✓' : lastMine.ackStatus === 'failed' ? '✗' : '⏳'}
-          </span>
-          <span>
-            {lastMine.to === 0xffffffff || lastMine.to === undefined
-              ? 'Broadcast — no per-recipient ack (broadcasts are fire-and-forget; verify via cross-radio below)'
-              : lastMine.ackStatus === 'acked'
-                ? `Routing ack received from the mesh${lastMine.rxSnr ? ` (SNR ${lastMine.rxSnr.toFixed(1)})` : ''} — someone heard it and acknowledged. Note: a relay may have acked, doesn't guarantee the destination decoded the payload.`
-                : lastMine.ackStatus === 'failed'
-                  ? `Failed — ${lastMine.ackError === 3 ? 'no ack within 60s (TIMEOUT)' : `Routing.Error code ${lastMine.ackError}`}.`
-                  : `Waiting for routing ack… (${sinceSec.toFixed(0)}s elapsed)`}
-          </span>
-        </div>
+
+        {/* Echo — radio confirmed it transmitted */}
+        {traceEvents.filter((e) => e.kind === 'echo').slice(0, 1).map((e, i) => (
+          <div key={`echo-${i}`} className="chat-probe-row">
+            <span className="chat-probe-step ok">↑</span>
+            <div>
+              <div>
+                Your radio echoed the packet back <span style={{ color: 'var(--text-faint)' }}>· {fmtDelta(e.ts)}</span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+                Why this matters · the firmware reported it transmitted on RF. Without an echo (and no later events), the radio queued the packet but never sent it — often duty-cycle throttling, TX disabled, or deep sleep.
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {/* Relay events — other nodes forwarding our packet */}
+        {traceEvents.filter((e) => e.kind === 'relay').map((e, i) => (
+          <div key={`relay-${i}`} className="chat-probe-row">
+            <span className="chat-probe-step pending" style={{ color: 'var(--warn)' }}>↻</span>
+            <div>
+              <div>
+                Relayed by <strong>{nodeName(e.fromNode)}</strong>
+                {e.rssi !== undefined && e.rssi !== 0 && <> · RSSI {e.rssi} dBm</>}
+                {e.snr !== undefined && e.snr !== 0 && <> · SNR {e.snr.toFixed(1)}</>}
+                {e.hopStart !== undefined && e.hopLimit !== undefined && <> · hop {e.hopStart - e.hopLimit}/{e.hopStart}</>}
+                <span style={{ color: 'var(--text-faint)' }}> · {fmtDelta(e.ts)}</span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+                Why this matters · this is the "implicit ack" you'd hear on a broadcast — proof at least one neighbour decoded you and forwarded. It does <em>not</em> mean the destination got it; relays don't know what happens past their own retransmission.
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {/* Ack / Nak / Timeout — the terminal event for a DM */}
+        {!isBroadcast && (() => {
+          const acked = lastMine.ackStatus === 'acked';
+          const failed = lastMine.ackStatus === 'failed';
+          const isTimeout = failed && lastMine.ackError === 3;
+          const terminal = traceEvents.find((e) => e.kind === 'ack' || e.kind === 'nak' || e.kind === 'timeout');
+          if (acked) {
+            return (
+              <div className="chat-probe-row">
+                <span className="chat-probe-step ok">✓</span>
+                <div>
+                  <div>
+                    Routing ack
+                    {terminal?.fromNode !== undefined && <> from <strong>{nodeName(terminal.fromNode)}</strong></>}
+                    {terminal?.rssi !== undefined && terminal.rssi !== 0 && <> · RSSI {terminal.rssi} dBm</>}
+                    {terminal?.snr !== undefined && terminal.snr !== 0 && <> · SNR {terminal.snr.toFixed(1)}</>}
+                    {terminal && <span style={{ color: 'var(--text-faint)' }}> · {fmtDelta(terminal.ts)}</span>}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+                    Why this matters · someone in the routing path replied <code>errorReason=NONE</code>. For DMs this usually means the destination decoded the payload — but some firmware versions let a relay closer to the destination ack on its behalf. If you never see this node broadcast back, the "ack" was probably a relay's implicit ack. See <em>Learn → Acks &amp; Asymmetry</em>.
+                  </div>
+                </div>
+              </div>
+            );
+          }
+          if (failed) {
+            const reason = isTimeout
+              ? 'No ack within 60 seconds (TIMEOUT)'
+              : `Routing.Error code ${lastMine.ackError ?? '?'}`;
+            const whyTimeout = 'Why this matters · either no path to the destination exists, or a path exists one-way (you reach them, but their ack can\'t reach you). The firmware already retried a few times internally before reporting this. Try a Traceroute to see how far the packet actually got, or check Acks & Asymmetry for the one-way-link case.';
+            const whyNak = `Why this matters · the mesh routing layer rejected this. Common codes: 1=NO_ROUTE (the destination isn't reachable), 2=NO_INTERFACE, 3=TIMEOUT, 4=MAX_RETRANSMIT, 5=NO_CHANNEL, 6=TOO_LARGE, 8=BAD_REQUEST, 32=NOT_AUTHORIZED.`;
+            return (
+              <div className="chat-probe-row">
+                <span className="chat-probe-step bad">✗</span>
+                <div>
+                  <div>
+                    {reason}
+                    {terminal && <span style={{ color: 'var(--text-faint)' }}> · {fmtDelta(terminal.ts)}</span>}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+                    {isTimeout ? whyTimeout : whyNak}
+                  </div>
+                </div>
+              </div>
+            );
+          }
+          // Still pending
+          return (
+            <div className="chat-probe-row">
+              <span className="chat-probe-step pending">⏳</span>
+              <div>
+                <div>
+                  Waiting for routing ack <span style={{ color: 'var(--text-faint)' }}>· {sinceSec.toFixed(0)}s elapsed · times out at 60s</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+                  Why this matters · the firmware is waiting for a Routing-app reply addressed to this packet id. Acks travel back through the same mesh — every hop they cross is another chance to be lost. Inside ~30s on a small mesh is normal; pending past 30s usually means trouble.
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {isBroadcast && (
+          <div className="chat-probe-row">
+            <span className="chat-probe-step pending" style={{ color: 'var(--text-faint)' }}>·</span>
+            <div>
+              <div>Broadcast — no per-recipient ack</div>
+              <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+                Why this matters · broadcasts are fire-and-forget. The firmware listens for someone else retransmitting the same packet (the "implicit ack" / relay events above) as a proxy for "at least one neighbour heard it". To verify it actually crossed the air, see the cross-radio rows below.
+              </div>
+            </div>
+          </div>
+        )}
+
         {others.length === 0 ? (
           <div className="chat-probe-row">
             <span className="chat-probe-step pending">·</span>

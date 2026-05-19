@@ -2,6 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { useActiveConnId } from '../../hooks/MeshContext';
 import { PanelChannelHeader } from '../PanelChannelHeader';
 import { nodeIdHex } from '../../lib/node-identity';
+import type { TabId } from '../TopNav';
+import { useAntennaOverrides } from '../../hooks/useAntennaOverrides';
+import { useOwnedAntennas } from '../../hooks/useOwnedRosters';
+import { ANTENNA_CATALOG } from '../../lib/antenna-catalog';
 
 const STALE_S = 24 * 3600;
 const AGING_S = 3600;
@@ -60,6 +64,60 @@ type SortKey =
 type SortDir = 'asc' | 'desc';
 
 /**
+ * Star toggle that calls the radio's admin port to set/clear the node's
+ * is_favorite flag. The controller optimistically updates its local
+ * record so the UI flips immediately; the radio's next NodeInfo
+ * broadcast confirms the new state on its end. Self-favorite is
+ * disallowed (the radio doesn't accept it).
+ */
+function FavoriteToggle({ node, disabled }: { node: NodeRecord; disabled?: boolean }) {
+  const connId = useActiveConnId();
+
+  // "Me" row gets a non-toggle home glyph instead of the star — clearer
+  // than just dimming the star, and it instantly orients you when
+  // scrolling the table.
+  if (disabled) {
+    return (
+      <span
+        className="fav-toggle me-marker"
+        data-me="1"
+        title="This is your radio (the one this app is connected to)."
+      >
+        ⌂
+      </span>
+    );
+  }
+
+  const onClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const hex = (node.num >>> 0).toString(16).padStart(8, '0');
+    console.log(`[favorite] click !${hex} current=${node.isFavorite ? 'yes' : 'no'} connId=${connId}`);
+    if (!connId) { console.warn('[favorite] no active connId — ignoring'); return; }
+    try {
+      const ok = await window.mesh.setFavoriteNode({ connId, nodeNum: node.num, favorite: !node.isFavorite });
+      console.log(`[favorite] IPC returned ${ok}`);
+    } catch (err) {
+      console.error('[favorite] IPC error', err);
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!connId}
+      className="fav-toggle"
+      data-fav={node.isFavorite ? '1' : '0'}
+      title={node.isFavorite
+        ? 'Favorited on this radio\'s nodeDB. Click to remove.'
+        : 'Favorite this node on the radio. Persists across reboots.'}
+    >
+      {node.isFavorite ? '★' : '☆'}
+    </button>
+  );
+}
+
+/**
  * "Smart" default sort. Puts the most actionable rows at the top:
  *   1. Me (the radio you're connected to)
  *   2. Freshness tier — fresh / aging / stale / never
@@ -80,6 +138,10 @@ function smartCompare(a: NodeRecord, b: NodeRecord, myNum?: number): number {
     if (a.num === myNum) return -1;
     if (b.num === myNum) return 1;
   }
+  // Favorites bubble up just below "me" — that's the whole point of
+  // marking them.
+  const fav = (a.isFavorite ? 1 : 0) - (b.isFavorite ? 1 : 0);
+  if (fav !== 0) return -fav;
   const fa = freshnessRank(a.lastHeard);
   const fb = freshnessRank(b.lastHeard);
   if (fa !== fb) return fa - fb;
@@ -169,7 +231,7 @@ function fsplDb(distanceKm: number, freqMHz: number = 915): number {
 
 type SourceFilter = 'all' | 'rf' | 'mqtt';
 
-export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[]; state: ConnectionState; onMessageNode?: (num: number) => void }) {
+export function NodesPanel({ nodes, state, onMessageNode, go }: { nodes: NodeRecord[]; state: ConnectionState; onMessageNode?: (num: number) => void; go?: (id: TabId) => void }) {
   const heard = nodes.filter((n) => n.lastHeard);
   const direct = heard.filter((n) => (n.hopsAway ?? 0) === 0).length;
   const relayed = heard.filter((n) => (n.hopsAway ?? 0) > 0).length;
@@ -277,6 +339,7 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
               <table className="data">
                 <thead>
                   <tr>
+                    <th style={{ width: 28, textAlign: 'center' }} title="Favorite">★</th>
                     <th className={thClass('shortName')}    onClick={onHeaderClick('shortName')}>Short{sortInd('shortName')}</th>
                     <th className={thClass('longName')}     onClick={onHeaderClick('longName')}>Long name{sortInd('longName')}</th>
                     <th className={thClass('num')}          onClick={onHeaderClick('num')}>ID{sortInd('num')}</th>
@@ -304,6 +367,9 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
                           background: selectedNum === n.num ? 'var(--bg-elev-2)' : undefined,
                         }}
                       >
+                        <td style={{ textAlign: 'center', padding: 0 }}>
+                          <FavoriteToggle node={n} disabled={isMe} />
+                        </td>
                         <td style={{ color: 'var(--accent)' }}>{n.shortName || '????'}</td>
                         <td style={{ fontFamily: 'inherit' }}>
                           {n.longName || '(no name)'}
@@ -369,7 +435,7 @@ export function NodesPanel({ nodes, state, onMessageNode }: { nodes: NodeRecord[
 
         <div>
           {selected ? (
-            <NodeDetail node={selected} me={me} state={state} onMessage={onMessageNode} onClose={() => setSelectedNum(null)} />
+            <NodeDetail node={selected} me={me} state={state} onMessage={onMessageNode} onClose={() => setSelectedNum(null)} go={go} />
           ) : (
             <>
               <div className="info-card">
@@ -400,12 +466,14 @@ function NodeDetail({
   state,
   onMessage,
   onClose,
+  go,
 }: {
   node: NodeRecord;
   me: NodeRecord | undefined;
   state: ConnectionState;
   onMessage?: (n: number) => void;
   onClose: () => void;
+  go?: (id: TabId) => void;
 }) {
   const connId = useActiveConnId();
   const fr = freshness(node.lastHeard);
@@ -459,6 +527,9 @@ function NodeDetail({
         <dt>Packets seen</dt><dd>{node.packetCount}</dd>
       </dl>
 
+      <AntennaOverrideEditor node={node} />
+
+
       {!isMe && (
         <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
           <button
@@ -471,11 +542,19 @@ function NodeDetail({
           </button>
           <button
             className="ghost"
-            onClick={() => connId && window.mesh.sendTraceroute({ connId, to: node.num })}
+            onClick={async () => {
+              if (!connId) return;
+              await window.mesh.sendTraceroute({ connId, to: node.num });
+              // Jump to the Traceroute panel so the user sees the path
+              // build up as relays answer. The new trace appears in the
+              // panel's history with full timeline + hop breakdown.
+              go?.('traceroute');
+            }}
             disabled={state.status !== 'ready' || !connId}
             style={{ padding: '4px 10px', fontSize: 12 }}
+            title="Send a traceroute to this node and open the Traceroute panel to watch the path build up."
           >
-            Traceroute
+            Traceroute →
           </button>
         </div>
       )}
@@ -622,6 +701,160 @@ function BroadcastNodeInfoButton({ state }: { state: ConnectionState }) {
           {lastResult.ok ? 'sent — listen for replies' : 'not ready yet'}
         </span>
       )}
+    </div>
+  );
+}
+
+/**
+ * Inline editor for the user's per-node antenna gain override. The
+ * Device DB catalog ships a stockAntennaDbi for each hwModel — fine
+ * out of the box, but every real-world deployment with a 5 dBi
+ * fibreglass whip silently breaks our Link Budget math until the user
+ * tells us about it. This editor stores the override in the local DB
+ * (keyed by myNodeNum); the change immediately flows through every
+ * panel that uses `gainForNode` via the useAntennaOverrides hook.
+ */
+function AntennaOverrideEditor({ node }: { node: NodeRecord }) {
+  const { gainForNode, getOverride } = useAntennaOverrides();
+  const current = gainForNode(node);
+  const override = getOverride(node.num);
+
+  const [editing, setEditing] = useState(false);
+  const [dbi, setDbi] = useState<string>(String(current.dbi));
+  const [notes, setNotes] = useState<string>(override?.notes ?? '');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    // Re-sync the form when the underlying override changes (e.g. from
+    // a save) or when the user selects a different node.
+    setDbi(String(current.dbi));
+    setNotes(override?.notes ?? '');
+  }, [node.num, current.dbi, override?.notes]);
+
+  const onSave = async () => {
+    const parsed = parseFloat(dbi);
+    if (!isFinite(parsed) || parsed < -10 || parsed > 30) {
+      alert('Enter a valid antenna gain in dBi (typical range: 2–9).');
+      return;
+    }
+    setBusy(true);
+    try {
+      await window.mesh.setAntennaOverride({ nodeNum: node.num, dbi: parsed, notes: notes.trim() });
+      setEditing(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const onClear = async () => {
+    if (!confirm('Remove the antenna override? Link-budget math reverts to the catalog stock value for this hardware.')) return;
+    setBusy(true);
+    try {
+      await window.mesh.clearAntennaOverride(node.num);
+      setEditing(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sourceLabel = current.source === 'override' ? 'override'
+    : current.source === 'catalog' ? 'stock (catalog)'
+    : 'unknown · assumed';
+
+  if (!editing) {
+    return (
+      <div style={{ marginTop: 12, padding: '8px 10px', borderRadius: 4, background: 'rgba(154,163,178,0.06)', border: '1px solid rgba(154,163,178,0.18)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+          <div style={{ fontSize: 12 }}>
+            <span style={{ color: 'var(--text-faint)' }}>Antenna gain · </span>
+            <strong style={{ color: current.source === 'override' ? 'var(--accent)' : 'var(--text)' }}>{current.dbi.toFixed(1)} dBi</strong>
+            <span style={{ color: 'var(--text-faint)', marginLeft: 6, fontSize: 10.5 }}>{sourceLabel}</span>
+          </div>
+          <button className="ghost" onClick={() => setEditing(true)} style={{ padding: '2px 8px', fontSize: 11 }}>
+            {override ? 'Edit' : 'Override'}
+          </button>
+        </div>
+        {override?.notes && (
+          <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-dim)' }}>{override.notes}</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 4, background: 'rgba(92,200,255,0.05)', border: '1px solid rgba(92,200,255,0.3)' }}>
+      <div style={{ fontSize: 11, color: 'var(--text-faint)', marginBottom: 6 }}>
+        Stock catalog gain for this hardware: <strong>{(current.source === 'catalog' ? current : { dbi: 2 }).dbi.toFixed(1)} dBi</strong> · used by Link Budget, Coverage, Peer Check.
+      </div>
+      <OwnedAntennaPicker onPick={(spec) => { setDbi(String(spec.gainDbi)); setNotes(spec.name); }} />
+      <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: 8, alignItems: 'center' }}>
+        <label style={{ fontSize: 12, color: 'var(--text-dim)' }}>dBi</label>
+        <input
+          className="text"
+          type="number"
+          step="0.5"
+          min="-10"
+          max="30"
+          value={dbi}
+          onChange={(e) => setDbi(e.target.value)}
+          disabled={busy}
+          style={{ fontFamily: 'var(--mono)' }}
+        />
+        <label style={{ fontSize: 12, color: 'var(--text-dim)' }}>Notes</label>
+        <input
+          className="text"
+          type="text"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder='e.g. "5 dBi fibreglass omni, roof mount"'
+          disabled={busy}
+        />
+      </div>
+      <div style={{ marginTop: 10, display: 'flex', gap: 6 }}>
+        <button className="primary" onClick={onSave} disabled={busy} style={{ padding: '4px 10px', fontSize: 12 }}>
+          {busy ? 'Saving…' : 'Save'}
+        </button>
+        {override && (
+          <button className="ghost" onClick={onClear} disabled={busy} style={{ padding: '4px 10px', fontSize: 12, borderColor: 'var(--bad)', color: 'var(--bad)' }}>
+            Reset to stock
+          </button>
+        )}
+        <button className="ghost" onClick={() => setEditing(false)} disabled={busy} style={{ padding: '4px 10px', fontSize: 12 }}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Quick-pick dropdown that lets the user pick an antenna from their
+ * owned roster (Antenna DB → ⌂ Owned) and have the editor's dBi + notes
+ * fields auto-fill. Renders nothing if the roster is empty.
+ */
+function OwnedAntennaPicker({ onPick }: { onPick: (spec: { id: string; name: string; gainDbi: number }) => void }) {
+  const owned = useOwnedAntennas();
+  const ownedSpecs = ANTENNA_CATALOG.filter((a) => owned.isOwned(a.id));
+  if (ownedSpecs.length === 0) return null;
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <label style={{ fontSize: 11, color: 'var(--text-faint)', display: 'block', marginBottom: 3 }}>
+        Pick from your owned antennas ({ownedSpecs.length}):
+      </label>
+      <select
+        className="text"
+        defaultValue=""
+        onChange={(e) => {
+          const a = ownedSpecs.find((x) => x.id === e.target.value);
+          if (a) onPick(a);
+          e.target.value = ''; // reset so re-picking the same one still fires
+        }}
+        style={{ width: '100%' }}
+      >
+        <option value="">— pick to auto-fill dBi + notes —</option>
+        {ownedSpecs.map((a) => (
+          <option key={a.id} value={a.id}>{a.name} · {a.gainDbi} dBi</option>
+        ))}
+      </select>
     </div>
   );
 }

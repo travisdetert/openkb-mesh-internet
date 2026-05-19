@@ -8,6 +8,8 @@ import {
   encodeToRadio_SendTraceroute,
   encodeToRadio_BroadcastNodeInfo,
   encodeToRadio_Reboot,
+  encodeToRadio_SetFavorite,
+  encodeToRadio_NodedbReset,
   encodeToRadio_Heartbeat,
   encodeToRadio_SetOwner,
   encodeToRadio_SetLoraConfig,
@@ -79,6 +81,11 @@ export interface TextMessage {
   ackStatus?: 'received' | 'pending' | 'acked' | 'failed';
   /** Outgoing-only: when failed, the meshtastic Routing.errorReason number (3 = local timeout). */
   ackError?: number;
+  /** Outgoing-only: which node actually sent the Routing ack. If this
+   *  equals `to`, the destination replied (high confidence delivered).
+   *  Otherwise a relay closer to the destination acked on its behalf —
+   *  the destination's decode is unconfirmed. */
+  ackFromNode?: number;
   /** Outgoing-only: timestamp we handed it to the radio (ms). */
   sentAt?: number;
 }
@@ -266,10 +273,86 @@ export class MeshtasticController extends EventEmitter {
     this.lastRefreshAt = Date.now();
   }
 
+  /**
+   * Drop in-memory messages matching a conversation. The shared SQLite
+   * row delete is done by the manager (so multi-radio runs only DELETE
+   * once). Emits a `messages-cleared` event so the renderer can prune
+   * its own state. Returns the row count removed.
+   */
+  clearConversationLocal(opts: { kind: 'channel' | 'dm'; channel?: number; peer?: number }): number {
+    const my = this.state.myInfo?.myNodeNum;
+    const before = this.messages.length;
+    if (opts.kind === 'channel' && opts.channel !== undefined) {
+      this.messages = this.messages.filter((m) => !(m.channel === opts.channel && m.to === 0xffffffff));
+    } else if (opts.kind === 'dm' && opts.peer !== undefined && my !== undefined) {
+      this.messages = this.messages.filter((m) =>
+        !((m.from === my && m.to === opts.peer) || (m.from === opts.peer && m.to === my)),
+      );
+    }
+    const removed = before - this.messages.length;
+    if (removed > 0) this.emit('messages-cleared', { ...opts });
+    return removed;
+  }
+
+  /** Drop every in-memory message. DB delete is the manager's job. */
+  clearAllMessagesLocal(): number {
+    const n = this.messages.length;
+    this.messages = [];
+    if (n > 0) this.emit('messages-cleared', { kind: 'all' });
+    return n;
+  }
+
   /** Public: ask the radio to redump its nodeDB now. Used by the Refresh button. */
   refresh(): void {
     console.log('[controller] manual refresh requested');
     this.requestConfig();
+  }
+
+  /**
+   * Toggle a peer's favorite flag in this radio's nodeDB. Optimistically
+   * updates the local record + emits a 'node' event so the UI reflects
+   * the change immediately, then sends the admin message. The radio's
+   * next NodeInfo broadcast will confirm the new state.
+   */
+  setFavoriteNode(nodeNum: number, favorite: boolean): boolean {
+    const my = this.state.myInfo?.myNodeNum;
+    if (!my) {
+      console.warn('[controller] setFavoriteNode dropped — myNodeNum not yet known');
+      return false;
+    }
+    console.log(`[controller] setFavoriteNode !${nodeNum.toString(16).padStart(8, '0')} = ${favorite}`);
+    // Optimistic local update so the UI doesn't lag the click.
+    const existing = this.nodes.get(nodeNum);
+    if (existing) {
+      const updated: NodeRecord = { ...existing, isFavorite: favorite };
+      this.nodes.set(nodeNum, updated);
+      this.emit('node', updated);
+    }
+    this.enqueueToRadio(encodeToRadio_SetFavorite(my, nodeNum, favorite));
+    return true;
+  }
+
+  /**
+   * Wipe the radio's nodeDB via admin message AND clear our local
+   * in-memory record so the UI immediately reflects the empty state.
+   * Peers will repopulate over time as NodeInfo broadcasts come in.
+   * Returns false if myNodeNum isn't known yet.
+   */
+  purgeNodedb(): boolean {
+    const my = this.state.myInfo?.myNodeNum;
+    if (!my) {
+      console.warn('[controller] purgeNodedb dropped — myNodeNum not yet known');
+      return false;
+    }
+    console.log(`[controller] purgeNodedb on !${my.toString(16).padStart(8, '0')}`);
+    this.enqueueToRadio(encodeToRadio_NodedbReset(my));
+    // Clear local in-memory state too — keep "me" so the UI doesn't lose
+    // its own identity. Firmware does the same internally.
+    const me = this.nodes.get(my);
+    this.nodes.clear();
+    if (me) this.nodes.set(my, me);
+    this.emit('nodedb-cleared', { myNum: my });
+    return true;
   }
 
   /**
@@ -548,12 +631,20 @@ export class MeshtasticController extends EventEmitter {
     }
   }
 
-  private resolvePending(id: number): void {
+  /**
+   * Record a successful ack. `ackFromNode` is the radio that sent the
+   * Routing reply — if it equals the original destination, we have high
+   * confidence the message actually reached the recipient; if it's
+   * something else, the ack came back through a relay and the
+   * destination's actual decode is unconfirmed.
+   */
+  private resolvePending(id: number, ackFromNode?: number): void {
     const entry = this.pending.get(id);
     if (!entry) return;
     clearTimeout(entry.timeout);
     this.pending.delete(id);
     entry.message.ackStatus = 'acked';
+    entry.message.ackFromNode = ackFromNode;
     this.emit('message-status', entry.message);
   }
 
@@ -795,7 +886,7 @@ export class MeshtasticController extends EventEmitter {
         snr: pkt.rxSnr,
         errorReason: pkt.routing.errorReason,
       });
-      if (pkt.routing.errorReason === 0) this.resolvePending(pkt.requestId);
+      if (pkt.routing.errorReason === 0) this.resolvePending(pkt.requestId, pkt.from);
       else this.failPending(pkt.requestId, pkt.routing.errorReason);
     }
 
@@ -863,6 +954,9 @@ export class MeshtasticController extends EventEmitter {
         from: pkt.from,
         to: pkt.to,
         route: pkt.traceroute.route,
+        snrTowards: pkt.traceroute.snrTowards,
+        routeBack: pkt.traceroute.routeBack,
+        snrBack: pkt.traceroute.snrBack,
         rxRssi: pkt.rxRssi,
         rxSnr: pkt.rxSnr,
         hopStart: pkt.hopStart,

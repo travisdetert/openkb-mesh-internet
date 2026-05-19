@@ -33,6 +33,7 @@ import { DeviceLabPanel } from './components/panels/DeviceLabPanel';
 import { FirmwarePanel } from './components/panels/FirmwarePanel';
 import { DiscoveryPanel } from './components/learning/DiscoveryPanel';
 import { AsymmetricLinksPanel } from './components/learning/AsymmetricLinksPanel';
+import { PeerCheckPanel } from './components/panels/PeerCheckPanel';
 import { LinkBudgetPanel } from './components/learning/LinkBudgetPanel';
 import { SignalDistancePanel } from './components/learning/SignalDistancePanel';
 import { CoveragePanel } from './components/learning/CoveragePanel';
@@ -42,6 +43,7 @@ import { MeshRoutingPanel } from './components/learning/MeshRoutingPanel';
 import { MeshRealityPanel } from './components/learning/MeshRealityPanel';
 import { ConceptsPanel } from './components/ConceptsPanel';
 import { DeviceDatabasePanel } from './components/panels/DeviceDatabasePanel';
+import { AntennaDatabasePanel } from './components/panels/AntennaDatabasePanel';
 import { ExpectationPanel } from './components/ExpectationPanel';
 import { ComparePanel } from './components/ComparePanel';
 import { EventFeedPanel } from './components/EventFeedPanel';
@@ -316,6 +318,8 @@ export function App() {
         <ConnectionWizard
           state={mesh.state}
           myNode={myNode}
+          nodes={mesh.nodes}
+          recentPackets={mesh.recentPackets}
           nodesCount={mesh.nodes.length}
           channelsCount={mesh.state.channels?.length ?? 0}
           connectStartedAt={mesh.connectStartedAt}
@@ -325,7 +329,7 @@ export function App() {
           go={setTab}
         />
       )}
-      {tab === 'nodes' && <NodesPanel nodes={mesh.nodes} state={mesh.state} onMessageNode={openDm} />}
+      {tab === 'nodes' && <NodesPanel nodes={mesh.nodes} state={mesh.state} onMessageNode={openDm} go={setTab} />}
       {tab === 'map' && <PositionMapPanel nodes={mesh.nodes} state={mesh.state} links={mesh.links} onMessageNode={openDm} />}
       {tab === 'chat' && <ChatPanel messages={mesh.messages} nodes={mesh.nodes} state={mesh.state} target={chatTarget} setTarget={setChatTarget} />}
       {tab === 'telemetry' && <TelemetryPanel nodes={mesh.nodes} utilHistory={mesh.utilHistory} state={mesh.state} onMessageNode={openDm} />}
@@ -350,6 +354,7 @@ export function App() {
       )}
       {tab === 'discovery' && <DiscoveryPanel state={mesh.state} nodes={mesh.nodes} go={setTab} />}
       {tab === 'asymmetric-links' && <AsymmetricLinksPanel go={setTab} />}
+      {tab === 'peer-check' && <PeerCheckPanel nodes={mesh.nodes} state={mesh.state} messages={mesh.messages} go={setTab} />}
       {tab === 'link-budget' && <LinkBudgetPanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} go={setTab} />}
       {tab === 'rssi-distance' && <SignalDistancePanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} go={setTab} />}
       {tab === 'coverage' && <CoveragePanel nodes={mesh.nodes} state={mesh.state} myNode={myNode} onMessageNode={openDm} go={setTab} />}
@@ -361,6 +366,7 @@ export function App() {
       {tab === 'compare' && <ComparePanel />}
       {tab === 'events' && <EventFeedPanel nodes={mesh.nodes} onMessageNode={openDm} />}
       {tab === 'devices' && <DeviceDatabasePanel nodes={mesh.nodes} />}
+      {tab === 'antennas-db' && <AntennaDatabasePanel />}
       {tab === 'concepts' && <ConceptsPanel />}
       </main>
     </div>

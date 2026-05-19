@@ -100,7 +100,7 @@ export function Onboarding({ go, state, onClose }: Props) {
       body: (
         <>
           <p>
-            The <strong>Troubleshoot</strong> sidebar group is where to go when packets aren't crossing or messages
+            The <strong>Diagnose</strong> sidebar group is where to go when packets aren't crossing or messages
             aren't arriving. Top-down diagnostic flow:
           </p>
           <ul style={{ margin: '6px 0', paddingLeft: 20, color: 'var(--text-dim)' }}>
@@ -122,9 +122,11 @@ export function Onboarding({ go, state, onClose }: Props) {
       body: (
         <>
           <p>
-            The <strong>Learn</strong> sidebar group is offline reading — Link Budget, RSSI vs Distance, Coverage,
-            Antennas, LoRa CSS, Mesh Routing. They work without a radio connected and use your real data when
-            available.
+            The <strong>Learn — Mechanics</strong> sidebar group is offline reading — Link Budget, RSSI vs Distance,
+            Coverage, Antennas, LoRa CSS, Mesh Routing, plus Node Discovery and Acks & Asymmetry. They work without
+            a radio connected and use your real data when available. <strong>Learn — Planning</strong> is the
+            higher-level "is this even the right tool" content — Reality Check, Expectations, and a comparison
+            against LoRaWAN / satellite / cellular.
           </p>
           <p>
             That's it. Close this and start playing. You can re-open the tour any time from the Home page.

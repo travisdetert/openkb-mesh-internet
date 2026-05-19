@@ -356,6 +356,11 @@ body {
 .topnav .conn-pill.bad { color: var(--bad); border-color: rgba(255,107,129,0.4); }
 
 .page { padding: 18px 20px; overflow: auto; height: 100%; }
+/* When a "page" component is dropped inline inside the Connect wizard's
+   admin card, remove the outer page padding so the wizard's own card
+   chrome owns the spacing. Height/overflow also relax so the embedded
+   panel grows naturally with its content. */
+.page-embedded { padding: 14px 16px; height: auto; overflow: visible; }
 
 .layout-split {
   display: grid;
@@ -442,6 +447,34 @@ table.data th.sortable { cursor: pointer; user-select: none; }
 table.data th.sortable:hover { color: var(--text); }
 table.data th.sortable.active { color: var(--accent); }
 table.data th .sort-ind { margin-left: 4px; font-size: 9px; opacity: 0.85; }
+
+/* Favorite star toggle in the Nodes table */
+.fav-toggle {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 6px 8px;
+  border-radius: 4px;
+  color: var(--text-faint);
+  transition: background 0.12s, color 0.12s, transform 0.08s;
+}
+.fav-toggle[data-fav="1"] { color: var(--warn); }
+.fav-toggle:hover:not(:disabled) {
+  background: rgba(255, 209, 102, 0.12);
+  color: var(--warn);
+}
+.fav-toggle:active:not(:disabled) { transform: scale(0.92); }
+.fav-toggle:disabled { opacity: 0.25; cursor: not-allowed; }
+.fav-toggle.me-marker {
+  display: inline-block;
+  color: var(--accent);
+  cursor: default;
+  opacity: 0.85;
+  font-size: 16px;
+}
+.fav-toggle.me-marker:hover { background: transparent; }
 table.data td { padding: 7px 8px; border-bottom: 1px solid var(--line); font-family: var(--mono); }
 table.data tr:hover { background: var(--bg-elev-2); }
 
@@ -2429,6 +2462,12 @@ h1.page-title { font-size: 18px; margin: 0 0 4px; }
 }
 .conn-config-icon { font-family: var(--mono); color: var(--text-faint); }
 .conn-config-btn:hover .conn-config-icon { color: var(--accent); }
+.conn-config-btn.active {
+  background: rgba(92,200,255,0.10);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.conn-config-btn.active .conn-config-icon { color: var(--accent); }
 
 /* Inline "Edit →" link sitting on a card header. Used in the conn-grid cards. */
 .card-head-row {
@@ -2856,6 +2895,51 @@ h1.page-title { font-size: 18px; margin: 0 0 4px; }
   cursor: pointer;
 }
 .resend-btn:hover { background: rgba(255,107,129,0.22); }
+
+/* Inline delivery-flow disclosure on outgoing chat bubbles */
+.flow-toggle {
+  background: transparent;
+  border: 1px solid rgba(154,163,178,0.3);
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-family: var(--mono);
+  padding: 1px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.flow-toggle:hover { color: var(--accent); border-color: var(--accent); }
+
+.chat-flow {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(92,200,255,0.04);
+  border-left: 2px solid rgba(92,200,255,0.35);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  font-family: var(--mono);
+}
+.chat-flow-step {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--text-dim);
+}
+.chat-flow-glyph {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  font-weight: 600;
+}
+.chat-flow-time { color: var(--text-faint); }
+.chat-flow-ok      .chat-flow-glyph { color: var(--good); }
+.chat-flow-relay   .chat-flow-glyph { color: var(--warn); }
+.chat-flow-relay   { color: var(--text); }
+.chat-flow-bad     .chat-flow-glyph { color: var(--bad); }
+.chat-flow-bad     { color: var(--bad); }
+.chat-flow-pending .chat-flow-glyph { color: var(--text-faint); }
 
 .chat-failure {
   margin-top: 6px;

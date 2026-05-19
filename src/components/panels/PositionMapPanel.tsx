@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useActiveConnId } from '../../hooks/MeshContext';
+import { useActiveConnId, useMeshContext } from '../../hooks/MeshContext';
 import { PanelChannelHeader } from '../PanelChannelHeader';
 
 type BasemapStyle = 'dark' | 'voyager' | 'light';
@@ -63,6 +63,42 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const wheelAccumRef = useRef(0);
   const wheelLastRef = useRef(0);
+  // Cursor position over the map in screen coords, kept up-to-date by
+  // onMouseMove. Used for cursor-anchored wheel zoom so the point under
+  // your pointer stays put as the map scales.
+  const cursorScreenRef = useRef<{ sxPx: number; syPx: number; lat: number; lon: number } | null>(null);
+  // Active pan tween (when smoothly centering on a node). Cancelled if
+  // the user starts dragging or zooming.
+  const panTweenRef = useRef<number | null>(null);
+
+  // Activity pings: per-node timestamp of the most recent packet we've
+  // heard from them. The map renders an expanding ring per node, keyed
+  // by that timestamp so the ring re-mounts (and replays the animation)
+  // each time a new packet lands.
+  const { connections, activeConnId } = useMeshContext();
+  const activeConn = connections.find((c) => c.connId === activeConnId);
+  const nodePings = useMemo(() => {
+    const out = new Map<number, number>();
+    if (!activeConn) return out;
+    const cutoff = Date.now() - 5 * 60_000; // ignore pings older than 5min
+    for (const p of activeConn.recentPackets) {
+      if (p.receivedAt < cutoff) continue;
+      const prev = out.get(p.from);
+      if (prev === undefined || p.receivedAt > prev) out.set(p.from, p.receivedAt);
+    }
+    return out;
+  }, [activeConn]);
+  // Force re-render every second so the age-based opacity on pings/links
+  // updates smoothly. Cheap — just a tick counter.
+  const [, setMapTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setMapTick((n) => (n + 1) & 0xffff), 1000);
+    return () => clearInterval(id);
+  }, []);
+  // Tear down any active pan tween when the map unmounts (panel switch).
+  useEffect(() => () => {
+    if (panTweenRef.current !== null) cancelAnimationFrame(panTweenRef.current);
+  }, []);
 
   const positionedAll = useMemo(
     () => nodes.filter((n) => n.lat !== undefined && n.lon !== undefined && (n.lat !== 0 || n.lon !== 0)),
@@ -109,19 +145,86 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
   }, [autoView, zoomOverride, centerOverride]);
 
   const userInteracted = zoomOverride !== null || centerOverride !== null;
-  const adjustZoom = (delta: number) => {
-    setZoomOverride(clampZoom((view?.zoom ?? autoView?.zoom ?? 12) + delta));
-    if (centerOverride === null && view) setCenterOverride({ lat: view.centerLat, lon: view.centerLon });
+
+  /**
+   * Zoom by `delta` integer steps. When `anchorScreenX/Y` are given (the
+   * cursor's pixel position over the SVG), we adjust the center so the
+   * point under the cursor stays put — the rest of the map "scales away
+   * from" or "into" the cursor. Without anchors, falls back to centered
+   * zoom.
+   */
+  const adjustZoom = (delta: number, anchor?: { sxPx: number; syPx: number; lat: number; lon: number }) => {
+    if (!view) return;
+    cancelPanTween(); // Any zoom interaction cancels an in-flight pan tween
+    const newZoom = clampZoom(view.zoom + delta);
+    if (newZoom === view.zoom) return;
+    if (anchor) {
+      // Mercator coords of the anchor at the new zoom.
+      const anchorMxNew = lonToMercX(anchor.lon, newZoom);
+      const anchorMyNew = latToMercY(anchor.lat, newZoom);
+      // New min corner so the anchor lands at the same screen pixel.
+      const minMxNew = anchorMxNew - anchor.sxPx;
+      const minMyNew = anchorMyNew - anchor.syPx;
+      const centerMxNew = minMxNew + SVG_W / 2;
+      const centerMyNew = minMyNew + SVG_H / 2;
+      setCenterOverride({
+        lat: mercYToLat(centerMyNew, newZoom),
+        lon: mercXToLon(centerMxNew, newZoom),
+      });
+    } else if (centerOverride === null) {
+      setCenterOverride({ lat: view.centerLat, lon: view.centerLon });
+    }
+    setZoomOverride(newZoom);
   };
-  const resetView = () => { setZoomOverride(null); setCenterOverride(null); };
+
+  function cancelPanTween() {
+    if (panTweenRef.current !== null) {
+      cancelAnimationFrame(panTweenRef.current);
+      panTweenRef.current = null;
+    }
+  }
+
+  /**
+   * Smoothly tween the camera from its current center to (lat, lon) over
+   * `durationMs`. Mid-tween user drags or wheel zooms cancel it. Optional
+   * `targetZoom` zooms in/out along the way (useful for click-to-recenter
+   * which also zooms in one step).
+   */
+  function panTo(targetLat: number, targetLon: number, durationMs = 450, targetZoom?: number) {
+    if (!view) return;
+    cancelPanTween();
+    const startLat = view.centerLat;
+    const startLon = view.centerLon;
+    const startZoom = view.zoom;
+    const endZoom = targetZoom !== undefined ? clampZoom(targetZoom) : startZoom;
+    const startTs = performance.now();
+    const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
+    const step = (now: number) => {
+      const t = Math.min(1, (now - startTs) / durationMs);
+      const e = easeOut(t);
+      const lat = startLat + (targetLat - startLat) * e;
+      const lon = startLon + (targetLon - startLon) * e;
+      setCenterOverride({ lat, lon });
+      if (startZoom !== endZoom) setZoomOverride(clampZoom(Math.round(startZoom + (endZoom - startZoom) * e)));
+      if (t < 1) {
+        panTweenRef.current = requestAnimationFrame(step);
+      } else {
+        panTweenRef.current = null;
+      }
+    };
+    panTweenRef.current = requestAnimationFrame(step);
+  }
+
+  const resetView = () => { cancelPanTween(); setZoomOverride(null); setCenterOverride(null); };
   const recenterOnMe = () => {
     if (!me?.lat || !me?.lon) return;
-    setCenterOverride({ lat: me.lat, lon: me.lon });
+    panTo(me.lat, me.lon);
   };
   const recenterOnNode = (n: NodeRecord) => {
     if (n.lat == null || n.lon == null) return;
-    setCenterOverride({ lat: n.lat, lon: n.lon });
-    setZoomOverride(clampZoom((view?.zoom ?? autoView?.zoom ?? 12) + 1));
+    // Smoothly fly to the node and bump zoom by one level — feels much
+    // more "alive" than the previous snap-cut.
+    panTo(n.lat, n.lon, 500, (view?.zoom ?? autoView?.zoom ?? 12) + 1);
   };
 
   const [hoverNum, setHoverNum] = useState<number | null>(null);
@@ -171,6 +274,7 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
   const onMouseDown: React.MouseEventHandler<HTMLDivElement> = (e) => {
     if (!view) return;
     e.preventDefault();
+    cancelPanTween(); // drag overrides any in-flight smooth pan
     dragRef.current = {
       startLat: view.centerLat,
       startLon: view.centerLon,
@@ -181,14 +285,18 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
     };
   };
   const onMouseMove: React.MouseEventHandler<HTMLDivElement> = (e) => {
-    // Always update cursor lat/lon so the bottom-right readout is live.
+    // Always update cursor lat/lon so the bottom-right readout is live
+    // AND cursor screen coords for cursor-anchored wheel zoom.
     if (view) {
       const rect = e.currentTarget.getBoundingClientRect();
       const sxPx = (e.clientX - rect.left) * (SVG_W / rect.width);
       const syPx = (e.clientY - rect.top) * (SVG_H / rect.height);
       const mx = view.minMx + sxPx;
       const my = view.minMy + syPx;
-      setCursorLatLon({ lat: mercYToLat(my, view.zoom), lon: mercXToLon(mx, view.zoom) });
+      const lat = mercYToLat(my, view.zoom);
+      const lon = mercXToLon(mx, view.zoom);
+      setCursorLatLon({ lat, lon });
+      cursorScreenRef.current = { sxPx, syPx, lat, lon };
     }
     const d = dragRef.current;
     if (!d) return;
@@ -243,7 +351,8 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
       if (Math.abs(wheelAccumRef.current) >= STEP) {
         const steps = Math.trunc(wheelAccumRef.current / STEP);
         wheelAccumRef.current -= steps * STEP;
-        adjustZoom(-steps); // negative deltaY = scroll up = zoom in
+        // Cursor-anchored zoom: keep the point under the cursor stationary.
+        adjustZoom(-steps, cursorScreenRef.current ?? undefined);
       }
     };
     el.addEventListener('wheel', handler, { passive: false });
@@ -271,14 +380,14 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
     return m;
   }, [placed]);
   const meshEdges = useMemo(() => {
-    if (!showLinks) return [] as Array<{ a: PlacedNode; b: PlacedNode; distKm: number; rssi: number; snr: number; count: number; }>;
-    const edges: Array<{ a: PlacedNode; b: PlacedNode; distKm: number; rssi: number; snr: number; count: number; }> = [];
+    if (!showLinks) return [] as Array<{ a: PlacedNode; b: PlacedNode; distKm: number; rssi: number; snr: number; count: number; lastTs: number; }>;
+    const edges: Array<{ a: PlacedNode; b: PlacedNode; distKm: number; rssi: number; snr: number; count: number; lastTs: number; }> = [];
     for (const l of links) {
       const a = placedByNum.get(l.a_num);
       const b = placedByNum.get(l.b_num);
       if (!a || !b) continue;
       const distKm = haversineKm(a.node.lat!, a.node.lon!, b.node.lat!, b.node.lon!);
-      edges.push({ a, b, distKm, rssi: l.rssi_max ?? 0, snr: l.snr_avg ?? 0, count: l.count });
+      edges.push({ a, b, distKm, rssi: l.rssi_max ?? 0, snr: l.snr_avg ?? 0, count: l.count, lastTs: l.last_ts ?? 0 });
     }
     return edges;
   }, [links, placedByNum, showLinks]);
@@ -386,7 +495,18 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                     const dim = e.a.isStale || e.b.isStale;
                     // Stroke darkness/thickness scaled by RSSI (better = stronger line) and observation count.
                     const strength = e.rssi !== 0 ? Math.max(0, Math.min(1, (e.rssi + 130) / 50)) : 0.3;
-                    const opacity = (dim ? 0.25 : 0.55) * (0.4 + 0.6 * strength);
+                    // Age fade: links observed in the last hour are full
+                    // strength; week-old links drop to ~15%. Helps the
+                    // map "breathe" — yesterday's neighbours aren't drawn
+                    // with the same confidence as the ones still active.
+                    const ageMs = e.lastTs > 0 ? Math.max(0, Date.now() - e.lastTs) : 0;
+                    const ageFactor = e.lastTs === 0 ? 0.5
+                      : ageMs < 3600_000 ? 1
+                      : ageMs < 6 * 3600_000 ? 0.7
+                      : ageMs < 24 * 3600_000 ? 0.45
+                      : ageMs < 7 * 24 * 3600_000 ? 0.25
+                      : 0.12;
+                    const opacity = (dim ? 0.25 : 0.55) * (0.4 + 0.6 * strength) * ageFactor;
                     const width = 0.8 + 1.4 * Math.min(1, Math.log10(1 + e.count) / 1.5);
                     return (
                       <line
@@ -395,7 +515,11 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                         stroke={basemap === 'light' ? '#0c5fa3' : '#5cc8ff'}
                         strokeWidth={width}
                         opacity={opacity}
-                      />
+                      >
+                        {e.lastTs > 0 && (
+                          <title>Last seen {ago(Math.floor(e.lastTs / 1000))} ago · {e.count} packets · RSSI max {e.rssi || '?'} dBm · SNR avg {e.snr.toFixed(1)} dB</title>
+                        )}
+                      </line>
                     );
                   })}
                   {/* Distance labels at edge midpoints (optional toggle) */}
@@ -432,6 +556,30 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                           opacity={p.isStale ? 0.35 : 1}
                     />
                   ))}
+
+                  {/* Activity pings — an expanding ring per node when a
+                    *  packet from them lands. Keyed by receivedAt so each
+                    *  new packet replays the animation. Stays mounted ~1.4s
+                    *  then auto-fades to invisible. Pointer-events disabled
+                    *  so it doesn't steal clicks from the node dot. */}
+                  {placed.map((p) => {
+                    const lastPing = nodePings.get(p.node.num);
+                    if (!lastPing || Date.now() - lastPing > 5000) return null;
+                    const fill = p.isMe ? '#5cc8ff' : p.node.viaMqtt ? '#b88aff' : (p.node.hopsAway ?? 0) === 0 ? '#66d39a' : '#ffd166';
+                    return (
+                      <circle
+                        key={`ping-${p.node.num}-${lastPing}`}
+                        cx={p.x} cy={p.y}
+                        fill="none"
+                        stroke={fill}
+                        strokeWidth={2}
+                        style={{ pointerEvents: 'none' }}
+                      >
+                        <animate attributeName="r"       from={p.isMe ? 12 : 9} to="42" dur="1.4s" begin="0s" fill="freeze" />
+                        <animate attributeName="opacity" from="0.75"            to="0"  dur="1.4s" begin="0s" fill="freeze" />
+                      </circle>
+                    );
+                  })}
 
                   {placed.map((p) => {
                     const isMqtt = !!p.node.viaMqtt;

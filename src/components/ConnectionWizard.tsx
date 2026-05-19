@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useMeshContext } from '../hooks/MeshContext';
+import { SettingsPanel } from './panels/SettingsPanel';
+import { ChannelsPanel } from './panels/ChannelsPanel';
+import { MqttPanel } from './panels/MqttPanel';
 import type { TabId } from './TopNav';
 
 function pskDescription(pskLength: number): string {
@@ -22,6 +25,10 @@ function confidenceBadge(c: PortConfidence): string {
 interface Props {
   state: ConnectionState;
   myNode?: NodeRecord;
+  /** All nodes from the active radio — needed for the inline MQTT panel. */
+  nodes: NodeRecord[];
+  /** Recent packets — needed for the inline MQTT panel's live traffic view. */
+  recentPackets: Array<MeshPacketLite & { receivedAt: number }>;
   nodesCount: number;
   channelsCount: number;
   connectStartedAt: number | null;
@@ -69,6 +76,8 @@ function ago(ms: number): string {
 export function ConnectionWizard({
   state,
   myNode,
+  nodes,
+  recentPackets,
   nodesCount,
   channelsCount,
   connectStartedAt,
@@ -86,6 +95,10 @@ export function ConnectionWizard({
   const [attempted, setAttempted] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [adding, setAdding] = useState(false);
+  // Inline admin section — when set, the corresponding panel renders
+  // beneath the Configure toolbar instead of navigating away. Keeps the
+  // user grounded in the device-admin context.
+  const [adminSection, setAdminSection] = useState<'settings' | 'channels' | 'mqtt' | null>(null);
   const [autoConnect, setAutoConnectLocal] = useState<boolean>(() => {
     try { const v = localStorage.getItem('openkb.autoConnect.v1'); return v === null ? true : v === '1'; } catch { return true; }
   });
@@ -475,13 +488,25 @@ export function ConnectionWizard({
       {isConnected && (
         <div className="conn-config-row">
           <span className="conn-config-label">Configure this radio</span>
-          <button className="conn-config-btn" onClick={() => go('settings')} title="LoRa, device, position, power, network, display, Bluetooth">
+          <button
+            className={'conn-config-btn' + (adminSection === 'settings' ? ' active' : '')}
+            onClick={() => setAdminSection((s) => s === 'settings' ? null : 'settings')}
+            title="LoRa, device, position, power, network, display, Bluetooth"
+          >
             <span className="conn-config-icon">⚙</span> Settings
           </button>
-          <button className="conn-config-btn" onClick={() => go('channels')} title="Edit channels, PSKs, share via URL">
+          <button
+            className={'conn-config-btn' + (adminSection === 'channels' ? ' active' : '')}
+            onClick={() => setAdminSection((s) => s === 'channels' ? null : 'channels')}
+            title="Edit channels, PSKs, share via URL"
+          >
             <span className="conn-config-icon">#</span> Channels
           </button>
-          <button className="conn-config-btn" onClick={() => go('mqtt')} title="MQTT bridge, map reporting">
+          <button
+            className={'conn-config-btn' + (adminSection === 'mqtt' ? ' active' : '')}
+            onClick={() => setAdminSection((s) => s === 'mqtt' ? null : 'mqtt')}
+            title="MQTT bridge, map reporting"
+          >
             <span className="conn-config-icon">☁</span> MQTT
           </button>
           <button
@@ -508,6 +533,55 @@ export function ConnectionWizard({
           >
             <span className="conn-config-icon">↻</span> Reboot
           </button>
+          <button
+            className="conn-config-btn"
+            onClick={async () => {
+              if (!activeConnId || !isReady) return;
+              const label = myNode?.shortName || myNode?.longName || state.portPath || 'this radio';
+              const nodeCount = connections.find((c) => c.connId === activeConnId)?.nodes.length ?? 0;
+              if (!confirm(
+                `Purge ${label}'s nodeDB?\n\n` +
+                `Sends a nodedb_reset admin message — the radio drops every peer it has stored (currently ${nodeCount}) except itself. ` +
+                `Peers will repopulate over time as they broadcast NodeInfo (default ~3 hr cadence; can be sped up by asking peers to "Poke the mesh"). ` +
+                `Our local cache for this radio is also cleared, but the SQLite mirror for OTHER radios is unaffected.\n\n` +
+                `Use this when the nodeDB has duplicates, stale entries, or corruption you can't otherwise resolve.`,
+              )) return;
+              const ok = await window.mesh.purgeNodedb(activeConnId);
+              if (!ok) alert('Could not send purge — radio handshake may not be complete yet.');
+            }}
+            disabled={!isReady}
+            title={isReady
+              ? 'Wipe the radio\'s nodeDB. Peers repopulate from future NodeInfo broadcasts.'
+              : 'Wait for the radio to finish syncing before purging.'}
+          >
+            <span className="conn-config-icon">⌫</span> Purge nodeDB
+          </button>
+        </div>
+      )}
+
+      {/* Inline admin section — renders the chosen settings/channels/mqtt
+       *  panel right here on the Connect tab instead of navigating away,
+       *  so the user stays grounded in the device-admin context. */}
+      {isConnected && adminSection && (
+        <div className="card" style={{ padding: 0, marginTop: 4, marginBottom: 14, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid var(--line)' }}>
+            <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-faint)' }}>
+              {adminSection === 'settings' ? 'Radio settings' : adminSection === 'channels' ? 'Channels' : 'MQTT'}
+            </span>
+            <button
+              className="ghost"
+              style={{ padding: '2px 10px', fontSize: 11 }}
+              onClick={() => setAdminSection(null)}
+              title="Collapse this section and return to the radio overview"
+            >
+              ▲ Close
+            </button>
+          </div>
+          <div style={{ padding: 0 }}>
+            {adminSection === 'settings' && <SettingsPanel state={state} embedded />}
+            {adminSection === 'channels' && <ChannelsPanel state={state} embedded />}
+            {adminSection === 'mqtt'     && <MqttPanel state={state} nodes={nodes} recentPackets={recentPackets} embedded />}
+          </div>
         </div>
       )}
 
@@ -549,8 +623,10 @@ export function ConnectionWizard({
         </div>
       )}
 
-      {/* Live data: 3-up identity / config / channels grid when connected */}
-      {isReady && (
+      {/* Live data: 3-up identity / config / channels grid when connected.
+       *  Hidden while an inline admin section is open — the user picked
+       *  "go deeper", so the high-level overview belongs out of the way. */}
+      {isReady && !adminSection && (
         <div className="conn-grid">
           {state.myInfo && state.myInfo.myNodeNum > 0 && (
             <div className="card">
@@ -594,7 +670,7 @@ export function ConnectionWizard({
             <div className="card">
               <div className="card-head-row">
                 <h3 style={{ margin: 0 }}>LoRa config</h3>
-                <button className="card-edit-link" onClick={() => go('settings')}>Edit →</button>
+                <button className="card-edit-link" onClick={() => setAdminSection('settings')}>Edit →</button>
               </div>
               <dl className="kv kv-tight">
                 <dt>Region</dt><dd>{state.loraConfig.regionName}</dd>
@@ -626,7 +702,7 @@ export function ConnectionWizard({
             <div className="card">
               <div className="card-head-row">
                 <h3 style={{ margin: 0 }}>Channels</h3>
-                <button className="card-edit-link" onClick={() => go('channels')}>Edit →</button>
+                <button className="card-edit-link" onClick={() => setAdminSection('channels')}>Edit →</button>
               </div>
               <table className="data" style={{ fontSize: 11.5 }}>
                 <thead>

@@ -7,6 +7,10 @@ const DEFAULT_KEY_BYTE = 0x01; // Meshtastic convention: 1-byte PSK == "default 
 
 interface Props {
   state: ConnectionState;
+  /** Embedded inside the Connect wizard's inline admin area — hide the
+   *  standalone page title / intro / picker chrome that's redundant
+   *  with the wizard's own section header. */
+  embedded?: boolean;
 }
 
 interface Draft {
@@ -67,7 +71,7 @@ function draftEquals(a: Draft, b: Draft): boolean {
   return true;
 }
 
-export function ChannelsPanel({ state }: Props) {
+export function ChannelsPanel({ state, embedded = false }: Props) {
   const connId = useActiveConnId();
   const channels = state.channels ?? [];
   const isReady = state.status === 'ready';
@@ -195,11 +199,13 @@ export function ChannelsPanel({ state }: Props) {
 
   // ── Render ────────────────────────────────────────────────────────────
   return (
-    <div className="page">
-      <h1 className="page-title">Channels</h1>
-      <p className="page-sub">
-        Up to 8 channels per radio. <strong>Primary</strong> (slot 0) is the default mesh — its name + PSK derive your network identity, so two radios on the same mesh MUST share both. Secondary channels are optional sub-meshes for private groups.
-      </p>
+    <div className={embedded ? 'page page-embedded' : 'page'}>
+      {!embedded && <>
+        <h1 className="page-title">Channels</h1>
+        <p className="page-sub">
+          Up to 8 channels per radio. <strong>Primary</strong> (slot 0) is the default mesh — its name + PSK derive your network identity, so two radios on the same mesh MUST share both. Secondary channels are optional sub-meshes for private groups.
+        </p>
+      </>}
 
       {!isReady && (
         <div className="info-card" style={{ borderLeftColor: 'var(--warn)' }}>

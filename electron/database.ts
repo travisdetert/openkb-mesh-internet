@@ -27,6 +27,9 @@ export interface MessageRow { id: number; from_num: number; to_num: number; chan
 export interface PacketRow { id: number; from_num: number; to_num: number; portnum: number; rssi: number; snr: number; hop_start: number; hop_limit: number; ts: number; }
 export interface TracerouteRow { request_id: number; from_num: number; to_num: number; route_json: string; sent_ts: number; recv_ts: number | null; rssi: number; snr: number; }
 export interface LinkRow { a_num: number; b_num: number; rssi_min: number; rssi_max: number; snr_avg: number; count: number; last_ts: number; }
+export interface AntennaOverrideRow { node_num: number; dbi: number; notes: string; updated_at: number; }
+export interface OwnedDeviceRow { hw_model: number; quantity: number; notes: string; updated_at: number; }
+export interface OwnedAntennaRow { antenna_id: string; quantity: number; notes: string; updated_at: number; }
 
 export class MeshDatabase {
   private db: Database.Database;
@@ -130,6 +133,41 @@ export class MeshDatabase {
         PRIMARY KEY (a_num, b_num)
       );
       CREATE INDEX IF NOT EXISTS idx_links_last_ts ON links(last_ts DESC);
+
+      /* Per-node antenna overrides. Meshtastic's wire protocol has no
+         antenna field, so we keep this app-side: when the user upgrades
+         a stock whip on their own radio (or notes that a peer's been
+         upgraded), the override travels with the node_num and feeds the
+         Link Budget / Coverage / Peer Check math instead of the hwModel's
+         catalog stock value. */
+      CREATE TABLE IF NOT EXISTS antenna_overrides (
+        node_num INTEGER PRIMARY KEY,
+        dbi REAL NOT NULL,
+        notes TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL
+      );
+
+      /* Owned-devices roster. Records which hwModels the user personally
+         owns (separate from "have seen in mesh"). Drives the Device DB's
+         "Owned" filter / badge so a user can find their own fleet
+         instantly even when those radios aren't currently on the air. */
+      CREATE TABLE IF NOT EXISTS owned_devices (
+        hw_model INTEGER PRIMARY KEY,
+        quantity INTEGER NOT NULL DEFAULT 1,
+        notes TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL
+      );
+
+      /* Owned-antennas roster. Keyed by an app-side antenna_id from
+         src/lib/antenna-catalog.ts (e.g. "diamond-x30a"). Used by the
+         per-node antenna-override picker so the user can attach a known
+         antenna spec to a node instead of retyping dBi each time. */
+      CREATE TABLE IF NOT EXISTS owned_antennas (
+        antenna_id TEXT PRIMARY KEY,
+        quantity INTEGER NOT NULL DEFAULT 1,
+        notes TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL
+      );
     `);
   }
 
@@ -207,6 +245,85 @@ export class MeshDatabase {
   getRecentMessages(limit = 200): MessageRow[] {
     const rows = this.db.prepare(`SELECT * FROM messages ORDER BY ts DESC LIMIT ?`).all(limit) as MessageRow[];
     return rows.reverse();
+  }
+
+  /**
+   * Delete messages matching a single conversation. `kind='channel'`
+   * matches anything broadcast on that channel; `kind='dm'` matches the
+   * union of (me→peer) and (peer→me). Returns the row count deleted.
+   */
+  deleteMessagesByConversation(opts: { kind: 'channel' | 'dm'; channel?: number; myNum?: number; peer?: number }): number {
+    if (opts.kind === 'channel' && opts.channel !== undefined) {
+      const r = this.db.prepare(`DELETE FROM messages WHERE channel = ? AND to_num = ?`).run(opts.channel, 0xffffffff);
+      return r.changes;
+    }
+    if (opts.kind === 'dm' && opts.myNum !== undefined && opts.peer !== undefined) {
+      const r = this.db.prepare(`
+        DELETE FROM messages
+        WHERE (from_num = ? AND to_num = ?) OR (from_num = ? AND to_num = ?)
+      `).run(opts.myNum, opts.peer, opts.peer, opts.myNum);
+      return r.changes;
+    }
+    return 0;
+  }
+
+  /** Wipe every message. Confirmed by caller — no undo. */
+  deleteAllMessages(): number {
+    return this.db.prepare(`DELETE FROM messages`).run().changes;
+  }
+
+  /** Auto-prune helper — drop anything older than the cutoff (ms epoch). */
+  // ── Antenna overrides ──────────────────────────────────────────────────
+
+  listAntennaOverrides(): AntennaOverrideRow[] {
+    return this.db.prepare(`SELECT * FROM antenna_overrides`).all() as AntennaOverrideRow[];
+  }
+
+  setAntennaOverride(nodeNum: number, dbi: number, notes: string, ts: number): void {
+    this.db.prepare(`
+      INSERT INTO antenna_overrides (node_num, dbi, notes, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(node_num) DO UPDATE SET dbi = excluded.dbi, notes = excluded.notes, updated_at = excluded.updated_at
+    `).run(nodeNum, dbi, notes, ts);
+  }
+
+  clearAntennaOverride(nodeNum: number): boolean {
+    const r = this.db.prepare(`DELETE FROM antenna_overrides WHERE node_num = ?`).run(nodeNum);
+    return r.changes > 0;
+  }
+
+  // ── Owned devices / antennas ──────────────────────────────────────────
+
+  listOwnedDevices(): OwnedDeviceRow[] {
+    return this.db.prepare(`SELECT * FROM owned_devices`).all() as OwnedDeviceRow[];
+  }
+  setOwnedDevice(hwModel: number, quantity: number, notes: string, ts: number): void {
+    this.db.prepare(`
+      INSERT INTO owned_devices (hw_model, quantity, notes, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(hw_model) DO UPDATE SET quantity = excluded.quantity, notes = excluded.notes, updated_at = excluded.updated_at
+    `).run(hwModel, quantity, notes, ts);
+  }
+  clearOwnedDevice(hwModel: number): boolean {
+    return this.db.prepare(`DELETE FROM owned_devices WHERE hw_model = ?`).run(hwModel).changes > 0;
+  }
+
+  listOwnedAntennas(): OwnedAntennaRow[] {
+    return this.db.prepare(`SELECT * FROM owned_antennas`).all() as OwnedAntennaRow[];
+  }
+  setOwnedAntenna(antennaId: string, quantity: number, notes: string, ts: number): void {
+    this.db.prepare(`
+      INSERT INTO owned_antennas (antenna_id, quantity, notes, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(antenna_id) DO UPDATE SET quantity = excluded.quantity, notes = excluded.notes, updated_at = excluded.updated_at
+    `).run(antennaId, quantity, notes, ts);
+  }
+  clearOwnedAntenna(antennaId: string): boolean {
+    return this.db.prepare(`DELETE FROM owned_antennas WHERE antenna_id = ?`).run(antennaId).changes > 0;
+  }
+
+  pruneMessagesOlderThan(tsMs: number): number {
+    return this.db.prepare(`DELETE FROM messages WHERE ts < ?`).run(tsMs).changes;
   }
 
   // ── Packet log ─────────────────────────────────────────────────────────

@@ -232,6 +232,12 @@ export class MeshManager extends EventEmitter {
     controller.on('serial-event', (evt: unknown) => {
       this.emit('serial-event', { connId: id, event: evt });
     });
+    controller.on('messages-cleared', (info: unknown) => {
+      this.emit('messages-cleared', { connId: id, info });
+    });
+    controller.on('nodedb-cleared', (info: { myNum: number }) => {
+      this.emit('nodedb-cleared', { connId: id, ...info });
+    });
   }
 
   async disconnect(connId: string): Promise<void> {
@@ -356,6 +362,38 @@ export class MeshManager extends EventEmitter {
   /** Schedule a remote reboot via admin message. Default 5s grace. */
   reboot(connId: string, seconds: number = 5): boolean {
     return this.controllers.get(connId)?.reboot(seconds) ?? false;
+  }
+  /** Wipe the radio's nodeDB + clear our local in-memory cache. */
+  purgeNodedb(connId: string): boolean {
+    return this.controllers.get(connId)?.purgeNodedb() ?? false;
+  }
+  /** Toggle a peer's is_favorite flag in this radio's nodeDB. */
+  setFavoriteNode(connId: string, nodeNum: number, favorite: boolean): boolean {
+    return this.controllers.get(connId)?.setFavoriteNode(nodeNum, favorite) ?? false;
+  }
+
+  /**
+   * Clear one conversation across DB and every active controller's
+   * in-memory list. For DMs `myNum` is the perspective: rows where
+   * (from=myNum, to=peer) or (from=peer, to=myNum) get dropped.
+   */
+  clearConversation(opts: { kind: 'channel' | 'dm'; channel?: number; myNum?: number; peer?: number }): number {
+    if (this.db) this.db.deleteMessagesByConversation(opts);
+    let removed = 0;
+    for (const c of this.controllers.values()) {
+      removed += c.clearConversationLocal({ kind: opts.kind, channel: opts.channel, peer: opts.peer });
+    }
+    return removed;
+  }
+
+  /** Clear EVERY message from DB + every controller's memory. No undo. */
+  clearAllMessages(): number {
+    if (this.db) this.db.deleteAllMessages();
+    let removed = 0;
+    for (const c of this.controllers.values()) {
+      removed += c.clearAllMessagesLocal();
+    }
+    return removed;
   }
   /** Last successful refresh (ms epoch), or 0 if not yet synced. */
   getLastRefreshAt(connId: string): number {

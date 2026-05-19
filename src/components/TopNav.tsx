@@ -15,6 +15,7 @@ export type TabId =
   | 'sniffer'
   | 'discovery'
   | 'asymmetric-links'
+  | 'peer-check'
   | 'link-budget'
   | 'rssi-distance'
   | 'coverage'
@@ -31,46 +32,65 @@ export type TabId =
   | 'firmware'
   | 'events'
   | 'concepts'
-  | 'devices';
+  | 'devices'
+  | 'antennas-db';
+
+/** Sidebar grouping. After this got dense enough to be confusing we split
+ *  it into seven buckets:
+ *    setup       — get a radio configured and online
+ *    use         — what's happening on the mesh right now
+ *    diagnose    — why isn't the mesh doing what I expect
+ *    tools       — device-level / developer tooling (Device Lab, Firmware)
+ *    mechanics   — concept + diagnostic Learn panels (physics, protocol)
+ *    planning    — higher-level "should I use this for X" Learn panels
+ *    reference   — catalog + glossary
+ */
+export type TabGroup = 'setup' | 'use' | 'diagnose' | 'tools' | 'mechanics' | 'planning' | 'reference';
 
 export interface Tab {
   id: TabId;
   label: string;
-  group: 'app' | 'live' | 'troubleshoot' | 'learn' | 'kb';
+  group: TabGroup;
 }
 
 export const TABS: Tab[] = [
-  { id: 'home',         label: 'Home',           group: 'app' },
-  { id: 'connect',      label: 'Connect',        group: 'app' },
-  { id: 'settings',     label: 'Settings',       group: 'app' },
-  { id: 'mqtt',         label: 'MQTT',           group: 'app' },
-  { id: 'channels',     label: 'Channels',       group: 'app' },
-  { id: 'nodes',        label: 'Nodes',          group: 'live' },
-  { id: 'map',          label: 'Map',            group: 'live' },
-  { id: 'chat',         label: 'Chat',           group: 'live' },
-  { id: 'telemetry',    label: 'Telemetry',      group: 'live' },
-  { id: 'health',       label: 'Mesh Health',    group: 'troubleshoot' },
-  { id: 'device-lab',   label: 'Device Lab',     group: 'troubleshoot' },
-  { id: 'firmware',     label: 'Firmware',       group: 'troubleshoot' },
-  { id: 'radio-compare', label: 'Compare Radios', group: 'troubleshoot' },
-  { id: 'link-test',    label: 'Link Test',      group: 'troubleshoot' },
-  { id: 'delivery',     label: 'Delivery',       group: 'troubleshoot' },
-  { id: 'traceroute',   label: 'Traceroute',     group: 'troubleshoot' },
-  { id: 'sniffer',      label: 'Packet Sniffer', group: 'troubleshoot' },
-  { id: 'discovery',     label: 'Node Discovery',  group: 'learn' },
-  { id: 'asymmetric-links', label: 'Acks & Asymmetry', group: 'learn' },
-  { id: 'link-budget',   label: 'Link Budget',     group: 'learn' },
-  { id: 'rssi-distance', label: 'RSSI vs Distance', group: 'learn' },
-  { id: 'coverage',      label: 'Coverage',         group: 'learn' },
-  { id: 'antennas',      label: 'Antennas',        group: 'learn' },
-  { id: 'lora',         label: 'LoRa CSS',       group: 'learn' },
-  { id: 'mesh-routing', label: 'Mesh Routing',   group: 'learn' },
-  { id: 'reality',      label: 'Reality Check',  group: 'learn' },
-  { id: 'expectations', label: 'Expectations',   group: 'learn' },
-  { id: 'compare',      label: 'Compare',        group: 'learn' },
-  { id: 'events',       label: 'Event Feed',     group: 'live' },
-  { id: 'devices',      label: 'Device DB',       group: 'kb' },
-  { id: 'concepts',     label: 'Concepts',       group: 'kb' },
+  { id: 'home',         label: 'Home',           group: 'setup' },
+  { id: 'connect',      label: 'Connect',        group: 'setup' },
+  { id: 'settings',     label: 'Settings',       group: 'setup' },
+  { id: 'mqtt',         label: 'MQTT',           group: 'setup' },
+  { id: 'channels',     label: 'Channels',       group: 'setup' },
+  { id: 'nodes',        label: 'Nodes',          group: 'use' },
+  { id: 'map',          label: 'Map',            group: 'use' },
+  { id: 'chat',         label: 'Chat',           group: 'use' },
+  { id: 'telemetry',    label: 'Telemetry',      group: 'use' },
+  { id: 'events',       label: 'Event Feed',     group: 'use' },
+  { id: 'health',       label: 'Mesh Health',    group: 'diagnose' },
+  { id: 'radio-compare', label: 'Compare Radios', group: 'diagnose' },
+  { id: 'link-test',    label: 'Link Test',      group: 'diagnose' },
+  { id: 'delivery',     label: 'Delivery',       group: 'diagnose' },
+  { id: 'peer-check',   label: 'Peer Check',     group: 'diagnose' },
+  { id: 'traceroute',   label: 'Traceroute',     group: 'diagnose' },
+  { id: 'sniffer',      label: 'Packet Sniffer', group: 'diagnose' },
+  // Five "learn" panels that consume live mesh data — they really belong
+  // with the diagnostic tools because that's how people will reach for
+  // them. Their educational framing stays in the panel itself; pure-concept
+  // primers can live alongside them in Mechanics if we want.
+  { id: 'discovery',     label: 'Node Discovery',   group: 'diagnose' },
+  { id: 'link-budget',   label: 'Link Budget',      group: 'diagnose' },
+  { id: 'rssi-distance', label: 'RSSI vs Distance', group: 'diagnose' },
+  { id: 'coverage',      label: 'Coverage',         group: 'diagnose' },
+  { id: 'mesh-routing',  label: 'Mesh Routing',     group: 'diagnose' },
+  { id: 'device-lab',   label: 'Device Lab',     group: 'tools' },
+  { id: 'firmware',     label: 'Firmware',       group: 'tools' },
+  { id: 'asymmetric-links',  label: 'Acks & Asymmetry', group: 'mechanics' },
+  { id: 'antennas',          label: 'Antennas',         group: 'mechanics' },
+  { id: 'lora',              label: 'LoRa CSS',         group: 'mechanics' },
+  { id: 'reality',      label: 'Reality Check',  group: 'planning' },
+  { id: 'expectations', label: 'Expectations',   group: 'planning' },
+  { id: 'compare',      label: 'Compare',        group: 'planning' },
+  { id: 'devices',      label: 'Device DB',      group: 'reference' },
+  { id: 'antennas-db',  label: 'Antenna DB',     group: 'reference' },
+  { id: 'concepts',     label: 'Concepts',       group: 'reference' },
 ];
 
 interface Props {

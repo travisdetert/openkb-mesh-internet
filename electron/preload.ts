@@ -35,6 +35,26 @@ const api = {
   lastRefreshAt:      (connId: string) => ipcRenderer.invoke('mesh:lastRefreshAt', connId),
   broadcastNodeInfo:  (connId: string) => ipcRenderer.invoke('mesh:broadcastNodeInfo', connId),
   reboot:             (args: { connId: string; seconds?: number }) => ipcRenderer.invoke('mesh:reboot', args),
+  purgeNodedb:        (connId: string) => ipcRenderer.invoke('mesh:purgeNodedb', connId),
+  setFavoriteNode:    (args: { connId: string; nodeNum: number; favorite: boolean }) => ipcRenderer.invoke('mesh:setFavoriteNode', args),
+  clearConversation:  (args: { kind: 'channel' | 'dm'; channel?: number; myNum?: number; peer?: number }) => ipcRenderer.invoke('mesh:clearConversation', args),
+  clearAllMessages:   () => ipcRenderer.invoke('mesh:clearAllMessages'),
+  // Antenna overrides — per-node app-side metadata. Meshtastic's wire
+  // protocol has no antenna field, so user-supplied dBi (e.g. for a swap
+  // from a 2 dBi rubber duck to a 5 dBi fibreglass omni) lives here and
+  // feeds the Link Budget / Coverage / Peer Check math.
+  listAntennaOverrides: () => ipcRenderer.invoke('mesh:listAntennaOverrides'),
+  setAntennaOverride:   (args: { nodeNum: number; dbi: number; notes: string }) => ipcRenderer.invoke('mesh:setAntennaOverride', args),
+  clearAntennaOverride: (nodeNum: number) => ipcRenderer.invoke('mesh:clearAntennaOverride', nodeNum),
+  // Owned-devices / owned-antennas rosters. App-side metadata — totally
+  // independent of what the radio reports. Drives Device DB & Antenna DB
+  // 'Owned' filters and seeds the per-node antenna-override picker.
+  listOwnedDevices: () => ipcRenderer.invoke('mesh:listOwnedDevices'),
+  setOwnedDevice:   (args: { hwModel: number; quantity: number; notes: string }) => ipcRenderer.invoke('mesh:setOwnedDevice', args),
+  clearOwnedDevice: (hwModel: number) => ipcRenderer.invoke('mesh:clearOwnedDevice', hwModel),
+  listOwnedAntennas: () => ipcRenderer.invoke('mesh:listOwnedAntennas'),
+  setOwnedAntenna:   (args: { antennaId: string; quantity: number; notes: string }) => ipcRenderer.invoke('mesh:setOwnedAntenna', args),
+  clearOwnedAntenna: (antennaId: string) => ipcRenderer.invoke('mesh:clearOwnedAntenna', antennaId),
   // ── BLE bridge ──────────────────────────────────────────────────────
   bleStartSession:    (deviceName: string) => ipcRenderer.invoke('mesh:bleStartSession', deviceName),
   bleRxFrame:         (args: { connId: string; bytes: string }) => ipcRenderer.invoke('mesh:bleRxFrame', args),
@@ -117,6 +137,31 @@ const api = {
     const fn = (_e: unknown, p: { connId: string }) => cb(p);
     ipcRenderer.on('mesh:connectionRemoved', fn);
     return () => ipcRenderer.removeListener('mesh:connectionRemoved', fn);
+  },
+  onMessagesCleared: (cb: (p: { connId: string; info: { kind: 'channel' | 'dm' | 'all'; channel?: number; peer?: number } }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; info: { kind: 'channel' | 'dm' | 'all'; channel?: number; peer?: number } }) => cb(p);
+    ipcRenderer.on('mesh:messagesCleared', fn);
+    return () => ipcRenderer.removeListener('mesh:messagesCleared', fn);
+  },
+  onNodedbCleared: (cb: (p: { connId: string; myNum: number }) => void) => {
+    const fn = (_e: unknown, p: { connId: string; myNum: number }) => cb(p);
+    ipcRenderer.on('mesh:nodedbCleared', fn);
+    return () => ipcRenderer.removeListener('mesh:nodedbCleared', fn);
+  },
+  onAntennaOverrideChanged: (cb: (p: { nodeNum: number; dbi: number | null; notes: string }) => void) => {
+    const fn = (_e: unknown, p: { nodeNum: number; dbi: number | null; notes: string }) => cb(p);
+    ipcRenderer.on('mesh:antennaOverrideChanged', fn);
+    return () => ipcRenderer.removeListener('mesh:antennaOverrideChanged', fn);
+  },
+  onOwnedDeviceChanged: (cb: (p: { hwModel: number; quantity: number; notes: string }) => void) => {
+    const fn = (_e: unknown, p: { hwModel: number; quantity: number; notes: string }) => cb(p);
+    ipcRenderer.on('mesh:ownedDeviceChanged', fn);
+    return () => ipcRenderer.removeListener('mesh:ownedDeviceChanged', fn);
+  },
+  onOwnedAntennaChanged: (cb: (p: { antennaId: string; quantity: number; notes: string }) => void) => {
+    const fn = (_e: unknown, p: { antennaId: string; quantity: number; notes: string }) => cb(p);
+    ipcRenderer.on('mesh:ownedAntennaChanged', fn);
+    return () => ipcRenderer.removeListener('mesh:ownedAntennaChanged', fn);
   },
   // Main process asks renderer to push one ToRadio frame over GATT.
   onBleTxFrame: (cb: (p: { connId: string; bytes: string }) => void) => {

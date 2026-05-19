@@ -31,12 +31,16 @@ interface Props {
 //   - settings/mqtt/channels are reachable from inside the Connect tab
 //     (they configure the active device, so they belong with the device view).
 const SPECIAL_APP_IDS = new Set<TabId>(['home', 'connect', 'chat', 'settings', 'mqtt', 'channels']);
-const GROUP_ORDER: Array<{ key: 'app' | 'live' | 'troubleshoot' | 'learn' | 'kb'; label: string }> = [
-  { key: 'app', label: 'Setup' },
-  { key: 'live', label: 'Live' },
-  { key: 'troubleshoot', label: 'Troubleshoot' },
-  { key: 'learn', label: 'Learn' },
-  { key: 'kb', label: 'Reference' },
+import type { TabGroup } from './TopNav';
+
+const GROUP_ORDER: Array<{ key: TabGroup; label: string }> = [
+  { key: 'setup',     label: 'Setup' },
+  { key: 'use',       label: 'Use' },
+  { key: 'diagnose',  label: 'Diagnose' },
+  { key: 'tools',     label: 'Tools' },
+  { key: 'mechanics', label: 'Learn — Mechanics' },
+  { key: 'planning',  label: 'Learn — Planning' },
+  { key: 'reference', label: 'Reference' },
 ];
 
 export function Sidebar({
@@ -160,34 +164,47 @@ export function Sidebar({
         )}
       </div>
 
-      <button
-        key={chatPulseKey}
-        className={'sidebar-chat' + (active === 'chat' ? ' active' : '') + (unreadMessages > 0 ? ' has-unread' : '') + (isReady ? '' : ' dim')}
-        onClick={() => onSelect('chat')}
-        title={isReady ? 'Open the chat' : 'Connect a radio to start chatting'}
-      >
-        <div className="sidebar-chat-row">
-          <span className="sidebar-chat-label">Chat</span>
-          {unreadMessages > 0 && <span className="sidebar-chat-unread">{unreadMessages > 99 ? '99+' : unreadMessages}</span>}
-        </div>
-        <span className="sidebar-chat-sub">
-          {!isReady
-            ? 'connect a radio'
-            : unreadMessages > 0
-              ? `${unreadMessages} new message${unreadMessages === 1 ? '' : 's'}`
-              : 'all caught up'}
-        </span>
-      </button>
+      {/* Chat hero — only meaningful when there's a radio to chat through.
+       *  Hidden entirely when there are no connections (rather than just
+       *  dimmed) so the sidebar feels coherent in the pre-radio state. */}
+      {connections.length > 0 && (
+        <button
+          key={chatPulseKey}
+          className={'sidebar-chat' + (active === 'chat' ? ' active' : '') + (unreadMessages > 0 ? ' has-unread' : '') + (isReady ? '' : ' dim')}
+          onClick={() => onSelect('chat')}
+          title={isReady ? 'Open the chat' : 'Connect a radio to start chatting'}
+        >
+          <div className="sidebar-chat-row">
+            <span className="sidebar-chat-label">Chat</span>
+            {unreadMessages > 0 && <span className="sidebar-chat-unread">{unreadMessages > 99 ? '99+' : unreadMessages}</span>}
+          </div>
+          <span className="sidebar-chat-sub">
+            {!isReady
+              ? 'connect a radio'
+              : unreadMessages > 0
+                ? `${unreadMessages} new message${unreadMessages === 1 ? '' : 's'}`
+                : 'all caught up'}
+          </span>
+        </button>
+      )}
 
       <nav className="sidebar-nav">
         {GROUP_ORDER.map(({ key, label }) => {
           const groupTabs = TABS.filter((t) => t.group === key && !SPECIAL_APP_IDS.has(t.id));
           if (groupTabs.length === 0) return null;
+          // Hide entire radio-dependent groups when no radio is connected.
+          // Mechanics / Planning / Reference work fine offline so they stay.
+          // Once at least one connection exists (even pre-handshake) we
+          // surface them again — the user is on their way to live data.
+          const radioOnly = key === 'use' || key === 'diagnose' || key === 'tools';
+          if (radioOnly && connections.length === 0) return null;
           return (
             <div key={key} className="sidebar-section">
               <div className="sidebar-section-label">{label}</div>
               {groupTabs.map((t) => {
-                const dim = (key === 'live' || key === 'troubleshoot') && !isReady && requiresConnection(t.id);
+                // Groups whose panels expect a live radio — dim them when
+                // we're not connected so it's obvious why nothing's happening.
+                const dim = (key === 'use' || key === 'diagnose' || key === 'tools') && !isReady && requiresConnection(t.id);
                 const badge = badges[t.id];
                 const isChat = t.id === 'chat';
                 const pulseAttr = isChat ? chatPulseKey : 0;

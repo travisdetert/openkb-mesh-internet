@@ -5,6 +5,9 @@ interface Props {
   state: ConnectionState;
   nodes: NodeRecord[];
   recentPackets: Array<MeshPacketLite & { receivedAt: number }>;
+  /** Hide standalone page title / intro when rendered inside the
+   *  Connect wizard's inline admin area. */
+  embedded?: boolean;
 }
 
 const DEFAULT_BROKER = 'mqtt.meshtastic.org';
@@ -45,7 +48,7 @@ function configsEqual(a: MQTTConfig | undefined, b: MQTTConfig): boolean {
   );
 }
 
-export function MqttPanel({ state, nodes, recentPackets }: Props) {
+export function MqttPanel({ state, nodes, recentPackets, embedded = false }: Props) {
   const connId = useActiveConnId();
   const live = state.mqttConfig;
   const [draft, setDraft] = useState<MQTTConfig>(live ?? emptyDraft());
@@ -91,13 +94,15 @@ export function MqttPanel({ state, nodes, recentPackets }: Props) {
   const downlinkChannels = (state.channels ?? []).filter((c) => c.role !== 0 && c.downlinkEnabled);
 
   return (
-    <div className="page">
-      <h1 className="page-title">MQTT</h1>
-      <p className="page-sub">
-        Meshtastic's MQTT bridge lets your radio publish (and optionally consume) packets to a broker over the internet —
-        making "nodes" you see in the app potentially come from anywhere in the world, not just your local airwaves.
-        When this is on, look for the <span className="src-chip src-mqtt">MQTT</span> chip in Nodes and Packet Sniffer.
-      </p>
+    <div className={embedded ? 'page page-embedded' : 'page'}>
+      {!embedded && <>
+        <h1 className="page-title">MQTT</h1>
+        <p className="page-sub">
+          Meshtastic's MQTT bridge lets your radio publish (and optionally consume) packets to a broker over the internet —
+          making "nodes" you see in the app potentially come from anywhere in the world, not just your local airwaves.
+          When this is on, look for the <span className="src-chip src-mqtt">MQTT</span> chip in Nodes and Packet Sniffer.
+        </p>
+      </>}
 
       {/* Status strip — always visible */}
       <div className="mqtt-strip">
