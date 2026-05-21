@@ -41,6 +41,24 @@ import {
 import { lookupHwModel } from './device-database';
 import { MeshDatabase } from '../database';
 
+/**
+ * Diagnostic snapshot of the want_config handshake. Set while
+ * `status === 'configuring'` and cleared once `config_complete` arrives.
+ * The UI reads this to show liveness ("last frame 2s ago"), retry count,
+ * and a manual "Retry now" button.
+ */
+export interface SyncStatus {
+  /** ms epoch of when we entered `configuring`. */
+  startedAt: number;
+  /** ms epoch of the most-recent FromRadio frame observed during sync. */
+  lastFrameAt: number;
+  /** Number of times we've re-sent wantConfig because of a stall. */
+  retries: number;
+  /** Why sync ended (only set after we leave `configuring`). Useful for
+   *  surfacing the failure mode in the disconnected-with-error state. */
+  failure?: 'stall' | 'transport';
+}
+
 export interface ConnectionState {
   status: 'disconnected' | 'connecting' | 'configuring' | 'ready';
   portPath?: string;
@@ -55,6 +73,7 @@ export interface ConnectionState {
   mqttConfig?: MQTTConfigMsg;
   channels?: ChannelMsg[];
   error?: string;
+  sync?: SyncStatus;
 }
 
 export interface NodeRecord extends NodeInfo {
@@ -133,6 +152,27 @@ const HEARTBEAT_MS = 5 * 60 * 1000;
 const ACK_TIMEOUT_MS = 60 * 1000;
 const RECONNECT_RECONFIG_DELAY_MS = 500;
 /**
+ * Sync watchdog: how long we'll go without a single FromRadio frame
+ * during `configuring` before assuming the wantConfig got dropped and
+ * re-sending. Generous enough for a slow BLE handshake (the radio may
+ * need to drop a previously-bonded peer before servicing us) but still
+ * fast enough to recover from a single dropped frame on USB.
+ */
+const SYNC_STALL_MS = 20_000;
+/** Maximum wantConfig re-sends before backing off to slow-retry mode. */
+const SYNC_MAX_RETRIES = 5;
+/**
+ * After this much elapsed time we flag the connection with a stall
+ * warning in the UI but keep the transport open and keep listening —
+ * BLE radios sometimes take a full minute to start streaming and a
+ * forced disconnect just makes the user wait through a fresh handshake.
+ * The user can hit Retry now or Disconnect from the UI.
+ */
+const SYNC_SOFT_TIMEOUT_MS = 90_000;
+/** Slow-retry cadence once we've hit max retries. Keeps re-sending
+ *  wantConfig in case the radio finally wakes up. */
+const SYNC_SLOW_RETRY_MS = 30_000;
+/**
  * How often to ask the radio for a fresh nodeDB dump. Meshtastic's design is
  * push-only — peers' NodeInfo arrives when *they* decide to broadcast (~3 hr
  * default), and our app sits passively in between. A periodic re-sync catches
@@ -160,6 +200,11 @@ export class MeshtasticController extends EventEmitter {
   /** In-memory ring of recent outgoing packet traces, keyed by packetId. */
   private traces = new Map<number, PacketTrace>();
   private maxTraces = 100;
+  /** Sync watchdog state. Active during `configuring`; null otherwise. */
+  private syncTimer: NodeJS.Timeout | null = null;
+  private syncStartedAt = 0;
+  private lastFrameAt = 0;
+  private syncRetries = 0;
 
   /** `transport` is optional — defaults to a fresh serial connection so the
    *  legacy `connect(portPath)` flow keeps working. Manager passes in a BLE
@@ -176,8 +221,10 @@ export class MeshtasticController extends EventEmitter {
     });
     this.conn.onReconnect(() => {
       // Serial reopened on its own — re-run the want_config handshake so the
-      // radio resends nodeDB / config / channels.
-      setTimeout(() => this.requestConfig(), RECONNECT_RECONFIG_DELAY_MS);
+      // radio resends nodeDB / config / channels. Goes through enterSync so
+      // the watchdog protects this round too; otherwise a reconnect that
+      // landed on a wedged radio would sit forever.
+      setTimeout(() => this.enterSync(), RECONNECT_RECONFIG_DELAY_MS);
     });
     this.conn.onError((err) => this.setState({ ...this.state, error: err.message }));
     // Forward Device Lab telemetry up to the manager which broadcasts via IPC.
@@ -256,13 +303,13 @@ export class MeshtasticController extends EventEmitter {
   async connect(portPath: string): Promise<void> {
     this.setState({ status: 'connecting', portPath });
     await this.conn.connect(portPath);
-    this.setState({ status: 'configuring', portPath });
-    this.requestConfig();
+    this.enterSync(portPath);
   }
 
   async disconnect(): Promise<void> {
     this.stopHeartbeat();
     this.stopNodeRefresh();
+    this.exitSync();
     await this.conn.disconnect();
     this.setState({ status: 'disconnected' });
   }
@@ -271,6 +318,117 @@ export class MeshtasticController extends EventEmitter {
     const configId = (Math.random() * 0xffffffff) >>> 0;
     this.enqueueToRadio(encodeToRadio_WantConfig(configId));
     this.lastRefreshAt = Date.now();
+  }
+
+  /**
+   * Enter the `configuring` state with a fresh sync watchdog. Records
+   * timestamps in ConnectionState.sync so the UI can render liveness.
+   * Called from connect() and from the auto-reconnect path.
+   */
+  private enterSync(portPath?: string): void {
+    this.exitSync();
+    this.syncStartedAt = Date.now();
+    this.lastFrameAt = Date.now();
+    this.syncRetries = 0;
+    this.setState({
+      ...this.state,
+      status: 'configuring',
+      portPath: portPath ?? this.state.portPath,
+      error: undefined,
+      sync: { startedAt: this.syncStartedAt, lastFrameAt: this.lastFrameAt, retries: 0 },
+    });
+    this.requestConfig();
+    this.armSyncWatchdog();
+  }
+
+  /** Stop the sync watchdog and clear the diagnostic snapshot. */
+  private exitSync(failure?: SyncStatus['failure']): void {
+    if (this.syncTimer) { clearTimeout(this.syncTimer); this.syncTimer = null; }
+    if (this.state.sync) {
+      // If we're transitioning away from configuring, drop sync so the
+      // UI stops rendering the progress card. The `ready` case below
+      // does this explicitly; this handles disconnect / error paths.
+      this.setState({
+        ...this.state,
+        sync: failure ? { ...this.state.sync, failure } : undefined,
+      });
+    }
+  }
+
+  /** Reset the watchdog window — called after every frame during sync. */
+  private armSyncWatchdog(): void {
+    if (this.syncTimer) clearTimeout(this.syncTimer);
+    this.syncTimer = setTimeout(() => this.onSyncStall(), SYNC_STALL_MS);
+  }
+
+  /**
+   * Stall handler — fires SYNC_STALL_MS after the last observed frame.
+   *   • Under retry cap: re-send wantConfig and keep going.
+   *   • Past retry cap, under soft timeout: keep listening + slow-retry.
+   *   • Past soft timeout: surface a warning but DO NOT disconnect.
+   *     BLE radios sometimes wake up after a minute and start streaming;
+   *     a forced disconnect would just throw away the session.
+   */
+  private onSyncStall(): void {
+    if (this.state.status !== 'configuring') return;
+    const totalElapsed = Date.now() - this.syncStartedAt;
+
+    // Soft warning state: stay configuring, surface the stall to the UI,
+    // and slow-retry. The user can Retry now or Disconnect.
+    if (totalElapsed >= SYNC_SOFT_TIMEOUT_MS) {
+      const alreadyWarned = this.state.sync?.failure === 'stall';
+      if (!alreadyWarned) {
+        console.warn(`[controller] sync slow: ${Math.round(totalElapsed/1000)}s with no progress — keeping transport open, will keep retrying every ${SYNC_SLOW_RETRY_MS/1000}s. User can Retry now or Disconnect.`);
+        this.setState({
+          ...this.state,
+          error: `Sync hasn't completed after ${Math.round(totalElapsed/1000)}s. The radio is still connected and we're retrying. Common BLE fixes: force-quit the official Meshtastic phone app (radios usually only allow one BLE client), or press the radio's physical button to wake it.`,
+          sync: { ...this.state.sync!, failure: 'stall' },
+        });
+      }
+      this.syncRetries++;
+      console.warn(`[controller] slow retry ${this.syncRetries}: re-sending wantConfig`);
+      this.requestConfig();
+      this.setState({
+        ...this.state,
+        sync: { startedAt: this.syncStartedAt, lastFrameAt: this.lastFrameAt, retries: this.syncRetries, failure: 'stall' },
+      });
+      this.syncTimer = setTimeout(() => this.onSyncStall(), SYNC_SLOW_RETRY_MS);
+      return;
+    }
+
+    // Within the active retry phase.
+    if (this.syncRetries >= SYNC_MAX_RETRIES) {
+      // Out of fast retries but not at soft timeout yet — just rearm
+      // the watchdog so a late frame still resolves sync.
+      this.armSyncWatchdog();
+      return;
+    }
+    this.syncRetries++;
+    console.warn(`[controller] sync stall — resending wantConfig (retry ${this.syncRetries}/${SYNC_MAX_RETRIES})`);
+    this.setState({
+      ...this.state,
+      sync: { startedAt: this.syncStartedAt, lastFrameAt: this.lastFrameAt, retries: this.syncRetries },
+    });
+    this.requestConfig();
+    this.armSyncWatchdog();
+  }
+
+  /**
+   * Manual sync retry from the UI. Re-issues wantConfig and rearms the
+   * watchdog. No-op outside `configuring`. Returns whether anything was
+   * actually attempted.
+   */
+  retrySync(): boolean {
+    if (this.state.status !== 'configuring') return false;
+    this.syncRetries++;
+    console.log(`[controller] manual sync retry (retry ${this.syncRetries})`);
+    this.setState({
+      ...this.state,
+      sync: { startedAt: this.syncStartedAt, lastFrameAt: this.lastFrameAt, retries: this.syncRetries },
+    });
+    this.requestConfig();
+    this.armSyncWatchdog();
+    return true;
   }
 
   /**
@@ -668,6 +826,24 @@ export class MeshtasticController extends EventEmitter {
   private handleFromRadio(bytes: Uint8Array): void {
     const msg = decodeFromRadio(bytes);
 
+    // Keep the sync watchdog fresh — any frame from the radio counts as
+    // liveness, even if it's a packet unrelated to the handshake. Without
+    // this, a chatty mesh could mask a missed config_complete because
+    // we'd keep seeing packets but the sync card would never tick over.
+    if (this.state.status === 'configuring') {
+      this.lastFrameAt = Date.now();
+      // Republish sync only on a meaningful gap so we don't spam state
+      // updates on every received packet during a busy mesh.
+      const lastPublished = this.state.sync?.lastFrameAt ?? 0;
+      if (this.lastFrameAt - lastPublished > 500) {
+        this.setState({
+          ...this.state,
+          sync: { startedAt: this.syncStartedAt, lastFrameAt: this.lastFrameAt, retries: this.syncRetries },
+        });
+      }
+      this.armSyncWatchdog();
+    }
+
     switch (msg.type) {
       case 'my_info':
         if (msg.myInfo) {
@@ -732,7 +908,8 @@ export class MeshtasticController extends EventEmitter {
         break;
 
       case 'config_complete':
-        this.setState({ ...this.state, status: 'ready' });
+        if (this.syncTimer) { clearTimeout(this.syncTimer); this.syncTimer = null; }
+        this.setState({ ...this.state, status: 'ready', sync: undefined, error: undefined });
         this.startHeartbeat();
         this.startNodeRefresh();
         this.lastRefreshAt = Date.now();

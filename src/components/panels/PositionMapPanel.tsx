@@ -2,12 +2,25 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useActiveConnId, useMeshContext } from '../../hooks/MeshContext';
 import { PanelChannelHeader } from '../PanelChannelHeader';
 
-type BasemapStyle = 'dark' | 'voyager' | 'light';
-const BASEMAP_URLS: Record<BasemapStyle, string> = {
-  dark:    'dark_all',
-  voyager: 'rastertiles/voyager',
-  light:   'light_all',
-};
+type BasemapStyle = 'dark' | 'voyager' | 'light' | 'satellite';
+
+/**
+ * Build the tile URL for a given (style, z, x, y). CARTO basemaps use
+ * subdomain rotation (a–d); Esri's World Imagery does not (single host).
+ * All four basemaps are free to use with attribution, no API key.
+ */
+function tileUrl(style: BasemapStyle, z: number, x: number, y: number, subdomain: string): string {
+  switch (style) {
+    case 'satellite':
+      return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
+    case 'dark':
+      return `https://${subdomain}.basemaps.cartocdn.com/dark_all/${z}/${x}/${y}.png`;
+    case 'voyager':
+      return `https://${subdomain}.basemaps.cartocdn.com/rastertiles/voyager/${z}/${x}/${y}.png`;
+    case 'light':
+      return `https://${subdomain}.basemaps.cartocdn.com/light_all/${z}/${x}/${y}.png`;
+  }
+}
 
 interface Props {
   nodes: NodeRecord[];
@@ -117,7 +130,13 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
   const myId = state.myInfo?.myNodeNum;
   const me = positioned.find((n) => n.num === myId);
 
-  const autoView = useMemo(() => computeView(positioned, me), [positioned, me]);
+  // Picking what to AUTO-FIT to is separate from what to RENDER. We
+  // render every positioned node, but the camera should focus on the
+  // local cluster — an MQTT-fed peer 5000 km away shouldn't drag the
+  // whole map to continental scale on first paint. The user can still
+  // toggle MQTT visibility or reset the view to see the full spread.
+  const autoFitNodes = useMemo(() => pickAutoFitNodes(positioned, me), [positioned, me]);
+  const autoView = useMemo(() => computeView(autoFitNodes, me), [autoFitNodes, me]);
 
   // Apply user pan/zoom on top of the auto-fit view.
   const view = useMemo<View | null>(() => {
@@ -226,15 +245,31 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
     // more "alive" than the previous snap-cut.
     panTo(n.lat, n.lon, 500, (view?.zoom ?? autoView?.zoom ?? 12) + 1);
   };
+  /** Search-driven jump: select + fly to a node at a useful zoom level. */
+  const flyToNode = (n: NodeRecord) => {
+    if (n.lat == null || n.lon == null) return;
+    setSelectedId(n.num);
+    panTo(n.lat, n.lon, 600, Math.max(view?.zoom ?? 12, 14));
+  };
 
   const [hoverNum, setHoverNum] = useState<number | null>(null);
   const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
   const [cursorLatLon, setCursorLatLon] = useState<{ lat: number; lon: number } | null>(null);
+  const [coordsCopied, setCoordsCopied] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [focusMode, setFocusMode] = useState(false);
+  // Distance ruler: shift-click places point A, second shift-click places
+  // B. A third shift-click resets to a new A. Esc clears entirely.
+  const [rulerStart, setRulerStart] = useState<{ lat: number; lon: number } | null>(null);
+  const [rulerEnd, setRulerEnd] = useState<{ lat: number; lon: number } | null>(null);
   const [activeTab, setActiveTab] = useState<'map' | 'data'>('map');
   const [showLinks, setShowLinks] = useState(true);
   const [showDistances, setShowDistances] = useState(false);
   const [showCoverage, setShowCoverage] = useState(false);
   const [coverageSamples, setCoverageSamples] = useState<PathLossSample[]>([]);
+  const [showTrails, setShowTrails] = useState(false);
+  const [trailPoints, setTrailPoints] = useState<Array<{ node_num: number; lat: number; lon: number; ts: number }>>([]);
 
   // Fetch path-loss samples whenever the coverage overlay is enabled. We use
   // a 30-day window — enough history to fit a stable model without including
@@ -246,6 +281,17 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
       .then((s) => { if (!cancelled) setCoverageSamples(s); });
     return () => { cancelled = true; };
   }, [showCoverage]);
+
+  // Position trails — last 24h of fixes per node. Re-queried whenever the
+  // trail overlay is toggled on; the 24h window keeps the visual signal
+  // strong without dragging in stale history from prior trips.
+  useEffect(() => {
+    if (!showTrails) return;
+    let cancelled = false;
+    window.mesh.positionTrails({ sinceMs: Date.now() - 24 * 60 * 60 * 1000 })
+      .then((rows) => { if (!cancelled) setTrailPoints(rows); });
+    return () => { cancelled = true; };
+  }, [showTrails]);
 
   // Fit a log-distance path-loss model: RSSI = intercept + slope * log10(d_km).
   // The exponent n is -slope / 10 (so slope = -10n in dB per decade of distance).
@@ -274,6 +320,23 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
   const onMouseDown: React.MouseEventHandler<HTMLDivElement> = (e) => {
     if (!view) return;
     e.preventDefault();
+    // Shift-click: place a ruler point instead of starting a pan-drag.
+    // First shift-click sets A, second sets B, third resets to a new A.
+    if (e.shiftKey) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const sxPx = (e.clientX - rect.left) * (SVG_W / rect.width);
+      const syPx = (e.clientY - rect.top) * (SVG_H / rect.height);
+      const mx = view.minMx + sxPx;
+      const my = view.minMy + syPx;
+      const pt = { lat: mercYToLat(my, view.zoom), lon: mercXToLon(mx, view.zoom) };
+      if (!rulerStart || rulerEnd) {
+        setRulerStart(pt);
+        setRulerEnd(null);
+      } else {
+        setRulerEnd(pt);
+      }
+      return;
+    }
     cancelPanTween(); // drag overrides any in-flight smooth pan
     dragRef.current = {
       startLat: view.centerLat,
@@ -332,6 +395,63 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
     setCursorLatLon(null);
   };
 
+  // Double-click anywhere on the map: zoom in one step at the click
+  // point. Shift+dbl-click zooms out. Node-level onDoubleClick still
+  // wins because the node handler stops propagation before this fires.
+  const onMapDoubleClick: React.MouseEventHandler<HTMLDivElement> = (e) => {
+    if (!view) return;
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const sxPx = (e.clientX - rect.left) * (SVG_W / rect.width);
+    const syPx = (e.clientY - rect.top) * (SVG_H / rect.height);
+    const mx = view.minMx + sxPx;
+    const my = view.minMy + syPx;
+    adjustZoom(e.shiftKey ? -1 : 1, {
+      sxPx, syPx,
+      lat: mercYToLat(my, view.zoom),
+      lon: mercXToLon(mx, view.zoom),
+    });
+  };
+
+  // Keyboard navigation. The container is focusable (tabIndex=0) so
+  // clicking it focuses; arrow keys pan, +/- zoom (anchored to the
+  // current cursor position if known), 0 resets, c centers on me.
+  const onMapKeyDown: React.KeyboardEventHandler<HTMLDivElement> = (e) => {
+    if (!view) return;
+    const key = e.key;
+    // Pan step: 1/6 of the viewport per press — fast but not jarring.
+    const panBy = (dxFrac: number, dyFrac: number) => {
+      const centerMx = lonToMercX(view.centerLon, view.zoom) + dxFrac * SVG_W;
+      const centerMy = latToMercY(view.centerLat, view.zoom) + dyFrac * SVG_H;
+      cancelPanTween();
+      setCenterOverride({
+        lat: mercYToLat(centerMy, view.zoom),
+        lon: mercXToLon(centerMx, view.zoom),
+      });
+    };
+    if (key === '+' || key === '=') { e.preventDefault(); adjustZoom(1, cursorScreenRef.current ?? undefined); return; }
+    if (key === '-' || key === '_') { e.preventDefault(); adjustZoom(-1, cursorScreenRef.current ?? undefined); return; }
+    if (key === '0')                 { e.preventDefault(); resetView(); return; }
+    if (key === 'c' || key === 'C') { e.preventDefault(); recenterOnMe(); return; }
+    if (key === '?')                { e.preventDefault(); setShowHelp((v) => !v); return; }
+    if (key === 'Escape')           { e.preventDefault(); setShowHelp(false); setRulerStart(null); setRulerEnd(null); return; }
+    if (key === 'ArrowLeft')        { e.preventDefault(); panBy(-1/6, 0); return; }
+    if (key === 'ArrowRight')       { e.preventDefault(); panBy( 1/6, 0); return; }
+    if (key === 'ArrowUp')          { e.preventDefault(); panBy(0, -1/6); return; }
+    if (key === 'ArrowDown')        { e.preventDefault(); panBy(0,  1/6); return; }
+  };
+
+  // Copy the current cursor coords to clipboard with a brief confirmation.
+  const copyCursorCoords = async () => {
+    if (!cursorLatLon) return;
+    const text = `${cursorLatLon.lat.toFixed(5)}, ${cursorLatLon.lon.toFixed(5)}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCoordsCopied(true);
+      setTimeout(() => setCoordsCopied(false), 1200);
+    } catch { /* clipboard may be unavailable; user can select & copy */ }
+  };
+
   // React's onWheel is passive by default, so e.preventDefault() is ignored.
   // Attach a non-passive listener directly to the DOM node so the page doesn't
   // scroll while we're zooming the map.
@@ -373,6 +493,133 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
   const meBlock = placed.find((p) => p.isMe);
   const staleCount = positionedAll.length - positionedAll.filter((n) => !isStale(n.lastHeard)).length;
 
+  // Search matches — case-insensitive substring over shortName, longName,
+  // and hex node id. Capped at 6 results so the dropdown stays compact.
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [] as NodeRecord[];
+    return positioned
+      .filter((n) => {
+        const hex = '!' + n.num.toString(16).padStart(8, '0');
+        return (n.shortName || '').toLowerCase().includes(q)
+          || (n.longName || '').toLowerCase().includes(q)
+          || (n.id || '').toLowerCase().includes(q)
+          || hex.includes(q);
+      })
+      .slice(0, 6);
+  }, [searchQuery, positioned]);
+
+  // Focus mode: when ON and a node is selected, the neighbor set is the
+  // selected node plus every node connected to it by a mesh edge. Used
+  // by the renderer to dim non-neighbors and edges that don't touch the
+  // selected node. Falls back to null (no dimming) if there's nothing
+  // useful to focus on.
+  const focusNeighbors = useMemo(() => {
+    if (!focusMode || selectedId == null) return null;
+    const set = new Set<number>([selectedId]);
+    for (const l of links) {
+      if (l.a_num === selectedId) set.add(l.b_num);
+      if (l.b_num === selectedId) set.add(l.a_num);
+    }
+    return set;
+  }, [focusMode, selectedId, links]);
+
+  // Group trail rows by node and keep only nodes that genuinely moved.
+  // "Moved" = the bounding box of the trail spans more than ~30 meters.
+  // Stationary nodes get filtered out so the canvas isn't full of dots
+  // sitting on top of their current pin.
+  const trails = useMemo(() => {
+    if (!showTrails || trailPoints.length === 0) return [] as Array<{ nodeNum: number; pts: typeof trailPoints }>;
+    const grouped = new Map<number, typeof trailPoints>();
+    for (const p of trailPoints) {
+      const list = grouped.get(p.node_num) ?? [];
+      list.push(p);
+      grouped.set(p.node_num, list);
+    }
+    const out: Array<{ nodeNum: number; pts: typeof trailPoints }> = [];
+    for (const [nodeNum, pts] of grouped) {
+      if (pts.length < 2) continue;
+      let minLat = pts[0].lat, maxLat = pts[0].lat, minLon = pts[0].lon, maxLon = pts[0].lon;
+      for (const p of pts) {
+        if (p.lat < minLat) minLat = p.lat;
+        if (p.lat > maxLat) maxLat = p.lat;
+        if (p.lon < minLon) minLon = p.lon;
+        if (p.lon > maxLon) maxLon = p.lon;
+      }
+      // ~111 km per degree of latitude; rough but fine for the threshold.
+      const spanM = Math.max(maxLat - minLat, (maxLon - minLon) * Math.cos((minLat + maxLat) / 2 * Math.PI / 180)) * 111000;
+      if (spanM >= 30) out.push({ nodeNum, pts });
+    }
+    return out;
+  }, [trailPoints, showTrails]);
+
+  // ── Low-zoom clustering ────────────────────────────────────────────
+  // At wide zoom levels, dots and labels stack into a "wall of text".
+  // Bucket the placed-node positions into a coarse grid and render each
+  // bucket with ≥2 occupants as a single cluster glyph (count inside).
+  // "Me" and the selected node are exempt so they're never hidden.
+  // Clicking a cluster zooms in to its center.
+  const CLUSTER_BUCKET_PX = 36; // SVG units
+  const clusters = useMemo(() => {
+    if (!view || view.zoom > 9 || placed.length === 0) return null;
+    const buckets = new Map<string, PlacedNode[]>();
+    for (const p of placed) {
+      if (p.isMe || p.node.num === selectedId) continue;
+      const bx = Math.floor(p.x / CLUSTER_BUCKET_PX);
+      const by = Math.floor(p.y / CLUSTER_BUCKET_PX);
+      const key = `${bx}|${by}`;
+      const list = buckets.get(key) ?? [];
+      list.push(p);
+      buckets.set(key, list);
+    }
+    const out: Array<{ x: number; y: number; count: number; members: number[] }> = [];
+    for (const list of buckets.values()) {
+      if (list.length < 2) continue;
+      const cx = list.reduce((s, p) => s + p.x, 0) / list.length;
+      const cy = list.reduce((s, p) => s + p.y, 0) / list.length;
+      out.push({ x: cx, y: cy, count: list.length, members: list.map((p) => p.node.num) });
+    }
+    return out;
+  }, [view, placed, selectedId]);
+  const clusteredNums = useMemo(() => {
+    const s = new Set<number>();
+    if (clusters) for (const c of clusters) for (const n of c.members) s.add(n);
+    return s;
+  }, [clusters]);
+
+  // ── Label declutter ────────────────────────────────────────────────
+  // Greedy collision avoidance: walk labels in priority order (me, then
+  // selected, then focus neighbors, then by recency) and only render
+  // ones whose bounding box doesn't overlap an already-placed label.
+  // Hidden labels still hover-reveal via the existing tooltip path.
+  const labelShown = useMemo(() => {
+    const visible = placed.filter((p) => !clusteredNums.has(p.node.num));
+    const priority = (p: PlacedNode) =>
+      (p.isMe ? 1000 : 0)
+      + (p.node.num === selectedId ? 500 : 0)
+      + (focusNeighbors?.has(p.node.num) ? 200 : 0)
+      + (p.node.lastHeard ?? 0) / 1e10;
+    const sorted = [...visible].sort((a, b) => priority(b) - priority(a));
+    const placedBoxes: Array<{ x0: number; y0: number; x1: number; y1: number }> = [];
+    const shown = new Set<number>();
+    for (const p of sorted) {
+      const fontSize = p.isMe ? 14 : 12;
+      const label = p.node.shortName || '????';
+      const w = Math.max(20, label.length * fontSize * 0.62);
+      const h = fontSize + 4;
+      const yCenter = p.y - (p.isMe ? 18 : 14);
+      const box = { x0: p.x - w / 2, y0: yCenter - h / 2, x1: p.x + w / 2, y1: yCenter + h / 2 };
+      let collides = false;
+      for (const b of placedBoxes) {
+        if (!(box.x1 < b.x0 || b.x1 < box.x0 || box.y1 < b.y0 || b.y1 < box.y0)) {
+          collides = true; break;
+        }
+      }
+      if (!collides) { shown.add(p.node.num); placedBoxes.push(box); }
+    }
+    return shown;
+  }, [placed, clusteredNums, selectedId, focusNeighbors]);
+
   // Build renderable mesh edges: link rows where BOTH endpoints have positions.
   const placedByNum = useMemo(() => {
     const m = new Map<number, PlacedNode>();
@@ -396,7 +643,7 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
     <div className="page">
       <h1 className="page-title">Map</h1>
       <p className="page-sub">
-        Nodes that share GPS over the mesh appear here. Basemap tiles are © OpenStreetMap contributors / © CARTO. Distances use the haversine formula; halos show position precision.
+        Nodes that share GPS over the mesh appear here. <strong>Drag</strong> to pan, <strong>scroll</strong> or <strong>double-click</strong> to zoom (shift+double-click to zoom out), <strong>arrow keys</strong> pan, <strong>+/−</strong> zoom, <strong>0</strong> reset, <strong>c</strong> centers on you. Basemap tiles © OpenStreetMap / © CARTO.
       </p>
 
       <PanelChannelHeader state={state} label="VIEWING FROM" />
@@ -458,11 +705,16 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
             ) : (
               <div
                 ref={mapContainerRef}
-                style={{ position: 'relative', width: '100%', aspectRatio: '16 / 10', background: 'var(--bg)', borderRadius: 6, overflow: 'hidden', cursor: dragRef.current ? 'grabbing' : 'grab', userSelect: 'none' }}
+                tabIndex={0}
+                role="application"
+                aria-label="Mesh map — pan with drag or arrow keys, zoom with scroll or +/-, double-click to zoom in"
+                style={{ position: 'relative', width: '100%', aspectRatio: '16 / 10', background: 'var(--bg)', borderRadius: 6, overflow: 'hidden', cursor: dragRef.current ? 'grabbing' : 'grab', userSelect: 'none', outline: 'none' }}
                 onMouseDown={onMouseDown}
                 onMouseMove={onMouseMove}
                 onMouseUp={endDrag}
                 onMouseLeave={onMouseLeave}
+                onDoubleClick={onMapDoubleClick}
+                onKeyDown={onMapKeyDown}
               >
                 <svg width="100%" height="100%" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid meet">
                   <MapTiles view={view!} style={basemap} />
@@ -490,6 +742,36 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                     );
                   })}
 
+                  {/* Position trails — last-24h breadcrumbs for nodes that
+                    *  actually moved. Newer segments draw on top with higher
+                    *  opacity; older ones fade so a trail visibly "ages out"
+                    *  along its length. Rendered under mesh edges so live
+                    *  links stay visually dominant. */}
+                  {view && showTrails && trails.map((t) => {
+                    if (t.pts.length < 2) return null;
+                    const segs: React.ReactNode[] = [];
+                    const now = Date.now();
+                    for (let i = 0; i < t.pts.length - 1; i++) {
+                      const p0 = t.pts[i];
+                      const p1 = t.pts[i + 1];
+                      const a = projectMeters(p0.lat, p0.lon, view);
+                      const b = projectMeters(p1.lat, p1.lon, view);
+                      const ageH = Math.max(0, (now - p1.ts) / 3600_000);
+                      const opacity = Math.max(0.06, 0.55 * Math.exp(-ageH / 8));
+                      segs.push(
+                        <line
+                          key={`tr-${t.nodeNum}-${i}`}
+                          x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+                          stroke="#ffd166"
+                          strokeWidth={1.5}
+                          opacity={opacity}
+                          strokeLinecap="round"
+                        />,
+                      );
+                    }
+                    return <g key={`trail-${t.nodeNum}`} style={{ pointerEvents: 'none' }}>{segs}</g>;
+                  })}
+
                   {/* Mesh-wide link edges from the observed-links DB */}
                   {meshEdges.map((e, i) => {
                     const dim = e.a.isStale || e.b.isStale;
@@ -506,7 +788,14 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                       : ageMs < 24 * 3600_000 ? 0.45
                       : ageMs < 7 * 24 * 3600_000 ? 0.25
                       : 0.12;
-                    const opacity = (dim ? 0.25 : 0.55) * (0.4 + 0.6 * strength) * ageFactor;
+                    // Focus mode: dim edges that don't touch the selected
+                    // node. Edges between two non-neighbors disappear; edges
+                    // from selected → neighbor stay full strength.
+                    const focusDim = focusNeighbors
+                      ? (focusNeighbors.has(e.a.node.num) && focusNeighbors.has(e.b.node.num)
+                          && (e.a.node.num === selectedId || e.b.node.num === selectedId) ? 1 : 0.1)
+                      : 1;
+                    const opacity = (dim ? 0.25 : 0.55) * (0.4 + 0.6 * strength) * ageFactor * focusDim;
                     const width = 0.8 + 1.4 * Math.min(1, Math.log10(1 + e.count) / 1.5);
                     return (
                       <line
@@ -581,9 +870,92 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                     );
                   })}
 
-                  {placed.map((p) => {
+                  {/* Distance ruler. Shift-click two points on the map to
+                    *  measure. Renders A + line + B with a distance + free-
+                    *  space path-loss readout at the current LoRa frequency. */}
+                  {view && rulerStart && (() => {
+                    const a = projectMeters(rulerStart.lat, rulerStart.lon, view);
+                    const b = rulerEnd ? projectMeters(rulerEnd.lat, rulerEnd.lon, view) : null;
+                    const distKm = b ? haversineKm(rulerStart.lat, rulerStart.lon, rulerEnd!.lat, rulerEnd!.lon) : 0;
+                    const freqMhz = regionToMhz(state.loraConfig?.region);
+                    const fsplDb = b && distKm > 0 ? 20 * Math.log10(distKm) + 20 * Math.log10(freqMhz) + 32.45 : 0;
+                    const distLabel = distKm < 1
+                      ? `${(distKm * 1000).toFixed(0)} m`
+                      : distKm < 100 ? `${distKm.toFixed(2)} km` : `${distKm.toFixed(0)} km`;
+                    const miLabel = distKm < 1.609 ? `${(distKm * 1093.6).toFixed(0)} yd` : `${(distKm / 1.609).toFixed(2)} mi`;
+                    return (
+                      <g style={{ pointerEvents: 'none' }}>
+                        {b && (
+                          <line x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+                                stroke="#ffd166" strokeWidth={2.5}
+                                strokeDasharray="6 4" opacity={0.9} />
+                        )}
+                        <circle cx={a.x} cy={a.y} r={6} fill="#ffd166" stroke="#000" strokeWidth={1.5} />
+                        <text x={a.x + 8} y={a.y - 8} fontSize={12} fontWeight={700} fill="#ffd166"
+                              stroke="rgba(0,0,0,0.75)" strokeWidth={3} paintOrder="stroke fill"
+                              fontFamily="ui-monospace, Menlo, monospace">A</text>
+                        {b && (
+                          <>
+                            <circle cx={b.x} cy={b.y} r={6} fill="#ffd166" stroke="#000" strokeWidth={1.5} />
+                            <text x={b.x + 8} y={b.y - 8} fontSize={12} fontWeight={700} fill="#ffd166"
+                                  stroke="rgba(0,0,0,0.75)" strokeWidth={3} paintOrder="stroke fill"
+                                  fontFamily="ui-monospace, Menlo, monospace">B</text>
+                            <g transform={`translate(${(a.x + b.x) / 2}, ${(a.y + b.y) / 2 - 14})`}>
+                              <rect x={-78} y={-22} width={156} height={36} rx={4}
+                                    fill="rgba(15,17,21,0.92)" stroke="#ffd166" strokeWidth={1} />
+                              <text x={0} y={-6} textAnchor="middle" fontSize={12} fontWeight={700}
+                                    fill="#ffd166" fontFamily="ui-monospace, Menlo, monospace">
+                                {distLabel} · {miLabel}
+                              </text>
+                              <text x={0} y={9} textAnchor="middle" fontSize={11}
+                                    fill="#e6e8ee" fontFamily="ui-monospace, Menlo, monospace">
+                                FSPL ≈ {fsplDb.toFixed(1)} dB @ {freqMhz} MHz
+                              </text>
+                            </g>
+                          </>
+                        )}
+                      </g>
+                    );
+                  })()}
+
+                  {/* Cluster glyphs (only at low zoom). Click a cluster to
+                    *  zoom in 2 steps centered on it — feels like the mobile-
+                    *  maps "expand this group" gesture. */}
+                  {clusters && clusters.map((c, i) => {
+                    if (!view) return null;
+                    // Reproject cluster center back to lat/lon for panTo.
+                    const mx = view.minMx + c.x;
+                    const my = view.minMy + c.y;
+                    const cLat = mercYToLat(my, view.zoom);
+                    const cLon = mercXToLon(mx, view.zoom);
+                    return (
+                      <g
+                        key={`cluster-${i}`}
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => panTo(cLat, cLon, 500, view.zoom + 3)}
+                      >
+                        <circle cx={c.x} cy={c.y} r={15}
+                                fill="rgba(102, 211, 154, 0.92)"
+                                stroke="rgba(0,0,0,0.7)" strokeWidth={1.5} />
+                        <text x={c.x} y={c.y + 4}
+                              textAnchor="middle"
+                              fontSize={12} fontWeight={700}
+                              fill="#0f1115"
+                              fontFamily="ui-monospace, Menlo, monospace">
+                          {c.count}
+                        </text>
+                      </g>
+                    );
+                  })}
+
+                  {placed.filter((p) => !clusteredNums.has(p.node.num)).map((p) => {
                     const isMqtt = !!p.node.viaMqtt;
                     const fill = p.isMe ? '#5cc8ff' : isMqtt ? '#b88aff' : (p.node.hopsAway ?? 0) === 0 ? '#66d39a' : '#ffd166';
+                    // Focus mode: nodes outside the neighbor set fade out so
+                    // the topology around the selection is visually isolated.
+                    const focusDim = focusNeighbors && !focusNeighbors.has(p.node.num) ? 0.18 : 1;
+                    const opacity = (p.isStale ? 0.45 : 1) * focusDim;
+                    const showLabel = labelShown.has(p.node.num);
                     return (
                       <g
                         key={p.node.num}
@@ -592,23 +964,25 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                         onDoubleClick={(e) => { e.stopPropagation(); recenterOnNode(p.node); }}
                         onMouseEnter={() => { setHoverNum(p.node.num); setHoverPos({ x: p.x, y: p.y }); }}
                         onMouseLeave={() => setHoverNum((cur) => (cur === p.node.num ? null : cur))}
-                        style={{ cursor: 'pointer', opacity: p.isStale ? 0.45 : 1 }}
+                        style={{ cursor: 'pointer', opacity }}
                       >
                         <circle cx={p.x} cy={p.y} r={p.isMe ? 12 : 9}
                                 fill={isMqtt ? 'none' : fill}
                                 stroke={selectedId === p.node.num ? '#fff' : isMqtt ? '#b88aff' : 'rgba(0,0,0,0.6)'}
                                 strokeWidth={selectedId === p.node.num ? 3 : isMqtt ? 2 : 1.5}
                                 strokeDasharray={isMqtt ? '3 2' : undefined} />
-                        <text x={p.x} y={p.y - (p.isMe ? 18 : 14)}
-                              textAnchor="middle"
-                              fontSize={p.isMe ? 14 : 12}
-                              fill={p.isMe ? '#5cc8ff' : (basemap === 'light' ? '#1a1d23' : '#e6e8ee')}
-                              stroke={basemap === 'light' ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.7)'}
-                              strokeWidth={3}
-                              paintOrder="stroke fill"
-                              fontFamily="ui-monospace, Menlo, monospace">
-                          {p.node.shortName || '????'}
-                        </text>
+                        {showLabel && (
+                          <text x={p.x} y={p.y - (p.isMe ? 18 : 14)}
+                                textAnchor="middle"
+                                fontSize={p.isMe ? 14 : 12}
+                                fill={p.isMe ? '#5cc8ff' : (basemap === 'light' ? '#1a1d23' : '#e6e8ee')}
+                                stroke={basemap === 'light' ? 'rgba(255,255,255,0.85)' : 'rgba(0,0,0,0.75)'}
+                                strokeWidth={3}
+                                paintOrder="stroke fill"
+                                fontFamily="ui-monospace, Menlo, monospace">
+                            {p.node.shortName || '????'}
+                          </text>
+                        )}
                       </g>
                     );
                   })}
@@ -617,7 +991,7 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                 {/* Floating overlay: style toggle + zoom controls */}
                 <div className="map-overlay map-overlay-tr">
                   <div className="map-style-toggle">
-                    {(['dark', 'voyager', 'light'] as const).map((s) => (
+                    {(['dark', 'voyager', 'light', 'satellite'] as const).map((s) => (
                       <button
                         key={s}
                         className={'map-style-btn' + (basemap === s ? ' active' : '')}
@@ -634,8 +1008,13 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                       <button onClick={recenterOnMe} title="Recenter on your radio">⌖</button>
                     )}
                     {userInteracted && (
-                      <button onClick={resetView} title="Reset to auto-fit">⟲</button>
+                      <button onClick={resetView} title="Reset to auto-fit (0)">⟲</button>
                     )}
+                    <button
+                      className={showHelp ? 'active' : ''}
+                      onClick={() => setShowHelp((v) => !v)}
+                      title="Keyboard shortcuts (?)"
+                    >?</button>
                   </div>
                   <div className="map-zoom-buttons">
                     <button
@@ -660,7 +1039,57 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                     >
                       ⌷ coverage
                     </button>
+                    <button
+                      className={focusMode ? 'active' : ''}
+                      onClick={() => setFocusMode((v) => !v)}
+                      title="Focus mode: when a node is selected, fade everything except its direct neighbors and the edges that connect them. Reveals 'who can this node reach?' at a glance."
+                    >
+                      ◉ focus
+                    </button>
+                    <button
+                      className={showTrails ? 'active' : ''}
+                      onClick={() => setShowTrails((v) => !v)}
+                      title="Position trails: faint breadcrumb line behind each mobile node showing where it's been in the last 24 hours."
+                    >
+                      ~ trails
+                    </button>
                   </div>
+                </div>
+
+                {/* Search box (top-left) — fuzzy-match by name / id, click a
+                    result to fly to that node. */}
+                <div className="map-overlay map-overlay-tl map-search">
+                  <input
+                    type="text"
+                    placeholder="search nodes…"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && searchResults.length > 0) {
+                        e.preventDefault();
+                        flyToNode(searchResults[0]);
+                        setSearchQuery('');
+                      } else if (e.key === 'Escape') {
+                        setSearchQuery('');
+                      }
+                    }}
+                    aria-label="Search positioned nodes"
+                  />
+                  {searchResults.length > 0 && (
+                    <ul className="map-search-results">
+                      {searchResults.map((n) => (
+                        <li key={n.num}>
+                          <button
+                            type="button"
+                            onClick={() => { flyToNode(n); setSearchQuery(''); }}
+                          >
+                            <span className="map-search-short">{n.shortName || '????'}</span>
+                            <span className="map-search-long">{n.longName || `!${n.num.toString(16).padStart(8, '0')}`}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
 
                 {/* Coverage legend — only visible when the heatmap overlay is on. */}
@@ -682,10 +1111,51 @@ export function PositionMapPanel({ nodes, state, links, onMessageNode }: Props) 
                   </div>
                 )}
 
-                {/* Cursor lat/lon readout */}
+                {/* Scale bar (bottom-left). Shows a horizontal segment with
+                    a "nice" round meters/km value at the current zoom + lat. */}
+                {view && (() => {
+                  const sb = computeScaleBar(view);
+                  return (
+                    <div className="map-overlay map-overlay-bl map-scale-bar" title={`Scale at ${view.centerLat.toFixed(2)}° · z${view.zoom}`}>
+                      <div className="map-scale-bar-line" style={{ width: `${sb.widthPct}%` }} />
+                      <span className="map-scale-bar-label">{sb.label}</span>
+                    </div>
+                  );
+                })()}
+
+                {/* Cursor lat/lon readout — click to copy. */}
                 {cursorLatLon && (
-                  <div className="map-overlay map-overlay-br map-coords">
-                    {cursorLatLon.lat.toFixed(5)}, {cursorLatLon.lon.toFixed(5)}
+                  <button
+                    type="button"
+                    className="map-overlay map-overlay-br map-coords"
+                    onClick={copyCursorCoords}
+                    title="Click to copy"
+                  >
+                    {coordsCopied
+                      ? '✓ copied'
+                      : `${cursorLatLon.lat.toFixed(5)}, ${cursorLatLon.lon.toFixed(5)}`}
+                  </button>
+                )}
+
+                {/* Keyboard shortcuts overlay (press ? to toggle). */}
+                {showHelp && (
+                  <div className="map-help-overlay" role="dialog" aria-label="Map keyboard shortcuts">
+                    <div className="map-help-title">Map shortcuts</div>
+                    <table className="map-help-table">
+                      <tbody>
+                        <tr><td><kbd>drag</kbd></td><td>pan</td></tr>
+                        <tr><td><kbd>scroll</kbd> · <kbd>+</kbd>/<kbd>−</kbd></td><td>zoom (cursor-anchored)</td></tr>
+                        <tr><td><kbd>dbl-click</kbd></td><td>zoom in at point</td></tr>
+                        <tr><td><kbd>shift</kbd>+<kbd>dbl-click</kbd></td><td>zoom out at point</td></tr>
+                        <tr><td><kbd>shift</kbd>+<kbd>click</kbd></td><td>set ruler point A, then B (distance + path loss)</td></tr>
+                        <tr><td><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></td><td>pan ⅙ viewport</td></tr>
+                        <tr><td><kbd>0</kbd></td><td>reset to auto-fit</td></tr>
+                        <tr><td><kbd>c</kbd></td><td>center on your radio</td></tr>
+                        <tr><td><kbd>?</kbd></td><td>show / hide this card</td></tr>
+                        <tr><td><kbd>esc</kbd></td><td>hide this card</td></tr>
+                      </tbody>
+                    </table>
+                    <button className="map-help-close" onClick={() => setShowHelp(false)} aria-label="Close shortcuts">×</button>
                   </div>
                 )}
 
@@ -902,6 +1372,91 @@ function mercXToLon(mx: number, z: number): number {
   return (mx / (TILE_SIZE * Math.pow(2, z))) * 360 - 180;
 }
 
+/**
+ * Approximate center frequency (MHz) for each Meshtastic region enum
+ * value. Used by the distance ruler's free-space path-loss readout.
+ * The values are band centers — actual LoRa hops within these bands
+ * shift a few MHz around the channel, but FSPL math is essentially
+ * flat across the channel width so a center freq is plenty close.
+ */
+function regionToMhz(region: number | undefined): number {
+  switch (region) {
+    case 1:  return 915;  // US
+    case 2:  return 433;  // EU_433
+    case 3:  return 869;  // EU_868
+    case 4:  return 490;  // CN
+    case 5:  return 924;  // JP
+    case 6:  return 921;  // ANZ
+    case 7:  return 921;  // KR
+    case 8:  return 923;  // TW
+    case 9:  return 869;  // RU
+    case 10: return 866;  // IN
+    case 11: return 866;  // NZ_865
+    case 12: return 922;  // TH
+    case 13: return 2440; // LORA_24
+    case 14: return 433;  // UA_433
+    case 15: return 868;  // UA_868
+    case 16: return 433;  // MY_433
+    case 17: return 921;  // MY_919
+    case 18: return 921;  // SG_923
+    default: return 915;  // unconfigured radios usually US-band hardware
+  }
+}
+
+/**
+ * Compute a scale-bar segment for the current view. Picks a "nice"
+ * round meters/km value that lands close to ~120 SVG units wide and
+ * returns its label + percentage width of the container.
+ *
+ * Distance is taken from view.spanKm (haversine across the rendered
+ * viewport) so latitude-induced distortion at the poles is already
+ * accounted for — no separate cos(lat) correction needed.
+ */
+function computeScaleBar(view: View): { widthPct: number; label: string } {
+  const metersPerSvgUnit = (view.spanKm * 1000) / SVG_W;
+  const targetMeters = 140 * metersPerSvgUnit; // aim for ~140 SVG units of width
+  const nice = [
+    1, 2, 5, 10, 20, 50, 100, 200, 500,
+    1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 100_000,
+    200_000, 500_000, 1_000_000, 2_000_000, 5_000_000,
+  ];
+  let chosen = nice[0];
+  for (const n of nice) { if (n <= targetMeters) chosen = n; else break; }
+  const widthPct = (chosen / metersPerSvgUnit / SVG_W) * 100;
+  const label = chosen >= 1_000 ? `${chosen / 1_000} km` : `${chosen} m`;
+  return { widthPct, label };
+}
+
+/**
+ * Pick the subset of positioned nodes that the camera should auto-fit to
+ * on first render. Renders aren't affected — every positioned node is
+ * still drawn — this only controls the initial bbox.
+ *
+ * Strategy:
+ *   1. Drop MQTT-fed peers if there are local-mesh nodes to anchor on.
+ *      MQTT-relayed nodes are usually on the other side of the world
+ *      and were the #1 cause of "starts zoomed out way too far".
+ *   2. If we know where we are, expand a radius outward (50 → 200 →
+ *      500 km → infinite) until at least one peer comes along for the
+ *      ride. "me" is always included.
+ *   3. Falls back to all positioned nodes if filtering left us with
+ *      nothing useful (single-node solo case).
+ */
+function pickAutoFitNodes(positioned: NodeRecord[], me?: NodeRecord): NodeRecord[] {
+  if (positioned.length === 0) return positioned;
+  const nonMqtt = positioned.filter((n) => !n.viaMqtt);
+  let candidates = nonMqtt.length >= 1 ? nonMqtt : positioned;
+  if (me?.lat !== undefined && me?.lon !== undefined) {
+    for (const maxKm of [50, 200, 500]) {
+      const close = candidates.filter((n) =>
+        n.num === me.num || haversineKm(me.lat!, me.lon!, n.lat!, n.lon!) <= maxKm,
+      );
+      if (close.length >= 2) { candidates = close; break; }
+    }
+  }
+  return candidates.length > 0 ? candidates : positioned;
+}
+
 function computeView(nodes: NodeRecord[], me?: NodeRecord): View | null {
   if (!nodes.length) return null;
   const lats = nodes.map((n) => n.lat!);
@@ -1021,10 +1576,10 @@ function colorForRssi(rssi: number): string | null {
 }
 
 function MapTiles({ view, style }: { view: View; style: BasemapStyle }) {
-  // Carto basemaps. Free, no API key, attribution required.
-  // Subdomain rotation parallelises tile fetches across HTTP/2 connections.
+  // Free, no-API-key basemaps (CARTO + Esri). Attribution lives in the
+  // page-sub. Subdomain rotation parallelises tile fetches across HTTP/2
+  // connections (CARTO accepts a-d; Esri is single-host but harmless).
   const subdomains = ['a', 'b', 'c', 'd'];
-  const path = BASEMAP_URLS[style];
 
   const tileXMin = Math.floor(view.minMx / TILE_SIZE);
   const tileXMax = Math.floor(view.maxMx / TILE_SIZE);
@@ -1038,7 +1593,7 @@ function MapTiles({ view, style }: { view: View; style: BasemapStyle }) {
       if (ty < 0 || ty >= worldTiles) continue;
       const wrappedTx = ((tx % worldTiles) + worldTiles) % worldTiles;
       const sub = subdomains[(tx + ty) % subdomains.length];
-      const url = `https://${sub}.basemaps.cartocdn.com/${path}/${view.zoom}/${wrappedTx}/${ty}.png`;
+      const url = tileUrl(style, view.zoom, wrappedTx, ty, sub);
       const tileMx = tx * TILE_SIZE;
       const tileMy = ty * TILE_SIZE;
       const x = ((tileMx - view.minMx) / (view.maxMx - view.minMx)) * SVG_W;
@@ -1062,10 +1617,12 @@ function MapTiles({ view, style }: { view: View; style: BasemapStyle }) {
 }
 
 function Grid({ view, basemap }: { view: View; basemap: BasemapStyle }) {
-  const dark = basemap === 'dark';
-  const gridStroke = dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.08)';
-  const barStroke = dark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.6)';
-  const barText = dark ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.75)';
+  // Both 'dark' and 'satellite' have low-luminance imagery — use a faint
+  // white grid for both, dark grid for the lighter CARTO basemaps.
+  const onDarkBg = basemap === 'dark' || basemap === 'satellite';
+  const gridStroke = onDarkBg ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.08)';
+  const barStroke  = onDarkBg ? 'rgba(255,255,255,0.6)'  : 'rgba(0,0,0,0.6)';
+  const barText    = onDarkBg ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.75)';
 
   const lines: React.ReactNode[] = [];
   const stepKm = pickGridStep(view.spanKm);

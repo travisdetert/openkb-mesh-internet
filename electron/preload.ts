@@ -32,6 +32,7 @@ const api = {
   getChannelSetUrl:   (connId: string) => ipcRenderer.invoke('mesh:getChannelSetUrl', connId),
   applyChannelSetUrl: (args: { connId: string; url: string }) => ipcRenderer.invoke('mesh:applyChannelSetUrl', args),
   refresh:            (connId: string) => ipcRenderer.invoke('mesh:refresh', connId),
+  retrySync:          (connId: string) => ipcRenderer.invoke('mesh:retrySync', connId),
   lastRefreshAt:      (connId: string) => ipcRenderer.invoke('mesh:lastRefreshAt', connId),
   broadcastNodeInfo:  (connId: string) => ipcRenderer.invoke('mesh:broadcastNodeInfo', connId),
   reboot:             (args: { connId: string; seconds?: number }) => ipcRenderer.invoke('mesh:reboot', args),
@@ -60,6 +61,11 @@ const api = {
   bleRxFrame:         (args: { connId: string; bytes: string }) => ipcRenderer.invoke('mesh:bleRxFrame', args),
   bleDisconnected:    (args: { connId: string; reason?: string }) => ipcRenderer.invoke('mesh:bleDisconnected', args),
   bleError:           (args: { connId: string; message: string }) => ipcRenderer.invoke('mesh:bleError', args),
+  // Renderer-driven BLE chooser: while requestDevice() is pending, main
+  // forwards the live deviceList via `mesh:bleScanUpdate` events; user
+  // picks one or cancels and we resolve the cached chooser callback.
+  bleScanPick:        (deviceId: string) => ipcRenderer.invoke('mesh:bleScanPick', deviceId),
+  bleScanCancel:      () => ipcRenderer.invoke('mesh:bleScanCancel'),
   getAutoConnect:     () => ipcRenderer.invoke('mesh:getAutoConnect'),
   setAutoConnect:     (enabled: boolean) => ipcRenderer.invoke('mesh:setAutoConnect', enabled),
   getPortStats:       (connId: string) => ipcRenderer.invoke('mesh:getPortStats', connId),
@@ -70,6 +76,7 @@ const api = {
   dbStats: () => ipcRenderer.invoke('mesh:dbStats'),
   pathLossSamples: (args?: { connId?: string; sinceMs?: number }) => ipcRenderer.invoke('mesh:pathLossSamples', args ?? {}),
   telemetryHistory: (args?: { sinceMs?: number }) => ipcRenderer.invoke('mesh:telemetryHistory', args ?? {}),
+  positionTrails:   (args?: { sinceMs?: number }) => ipcRenderer.invoke('mesh:positionTrails', args ?? {}),
   links: () => ipcRenderer.invoke('mesh:links'),
 
   // ── event streams (all payloads now carry connId) ───────────────────
@@ -174,6 +181,19 @@ const api = {
     const fn = (_e: unknown, p: { connId: string }) => cb(p);
     ipcRenderer.on('mesh:bleDisconnectRequest', fn);
     return () => ipcRenderer.removeListener('mesh:bleDisconnectRequest', fn);
+  },
+  // Live BLE chooser updates: while the user is staring at the scan modal,
+  // we push fresh device lists here and emit `Ended` once the scan is
+  // resolved (pick / cancel / timeout).
+  onBleScanUpdate: (cb: (p: { devices: Array<{ deviceId: string; deviceName: string; alreadyOnUsb: boolean }>; elapsedMs: number }) => void) => {
+    const fn = (_e: unknown, p: { devices: Array<{ deviceId: string; deviceName: string; alreadyOnUsb: boolean }>; elapsedMs: number }) => cb(p);
+    ipcRenderer.on('mesh:bleScanUpdate', fn);
+    return () => ipcRenderer.removeListener('mesh:bleScanUpdate', fn);
+  },
+  onBleScanEnded: (cb: (p: { reason: 'picked' | 'cancelled' | 'timeout'; deviceId: string }) => void) => {
+    const fn = (_e: unknown, p: { reason: 'picked' | 'cancelled' | 'timeout'; deviceId: string }) => cb(p);
+    ipcRenderer.on('mesh:bleScanEnded', fn);
+    return () => ipcRenderer.removeListener('mesh:bleScanEnded', fn);
   },
 };
 

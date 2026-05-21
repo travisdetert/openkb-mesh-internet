@@ -36,6 +36,33 @@ let mainWindow: BrowserWindow | null = null;
 let manager: MeshManager;
 let db: MeshDatabase;
 
+// Active BLE chooser. Chromium's select-bluetooth-device event fires
+// repeatedly during a scan with a growing deviceList; we cache the
+// most-recent callback so the renderer (or a timeout) can resolve it
+// later when the user actually picks. Lives at module scope so the IPC
+// handlers in app.whenReady can resolve it.
+type BleScanEntry = { deviceId: string; deviceName: string; alreadyOnUsb: boolean };
+let bleScan: {
+  callback: (deviceId: string) => void;
+  latestDevices: BleScanEntry[];
+  timeoutId: NodeJS.Timeout | null;
+  startedAt: number;
+} | null = null;
+const BLE_SCAN_TIMEOUT_MS = 60_000;
+
+function endBleScan(deviceId: string, reason: 'picked' | 'cancelled' | 'timeout') {
+  if (!bleScan) return;
+  if (bleScan.timeoutId) clearTimeout(bleScan.timeoutId);
+  const cb = bleScan.callback;
+  bleScan = null;
+  try { cb(deviceId); }
+  catch (e) { console.warn('[ble] scan callback threw:', e); }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('mesh:bleScanEnded', { reason, deviceId });
+  }
+  console.log(`[ble] scan ended: ${reason}${deviceId ? ` (deviceId=${deviceId})` : ''}`);
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -72,67 +99,35 @@ function createWindow() {
     console.log(`${tag} ${message}`);
   });
 
-  // WebBluetooth in Electron has no built-in chooser UI. We have to register
-  // this listener and pick a deviceId ourselves. For now: auto-pick the
-  // first device returned (the renderer filters requestDevice() on the
-  // Meshtastic service UUID, so any device that lands here is already a
-  // valid Meshtastic radio). A proper picker UI is a follow-up.
-  let scanState: { ticks: number; startedAt: number; cancelTimer: NodeJS.Timeout | null } | null = null;
-  const SCAN_TIMEOUT_MS = 15_000;
+  // WebBluetooth in Electron has no built-in chooser UI — we MUST register
+  // this listener and pick a deviceId ourselves or `requestDevice()` hangs
+  // until the renderer's promise times out with nothing visible. Strategy:
+  // forward the live deviceList to the renderer (BleScanModal renders it),
+  // and wait for the user to pick via the bleScanPick IPC handler. A 60s
+  // hard timeout protects against scans that never resolve.
   mainWindow.webContents.on('select-bluetooth-device', (event, deviceList, callback) => {
     event.preventDefault();
-    if (!scanState) {
-      scanState = { ticks: 0, startedAt: Date.now(), cancelTimer: null };
-      // Start a hard timeout — Electron will keep re-firing this event
-      // indefinitely if no matching devices appear, so without a deadline
-      // the renderer's requestDevice() promise just hangs.
-      scanState.cancelTimer = setTimeout(() => {
-        console.warn(`[ble] scan: timed out after ${SCAN_TIMEOUT_MS / 1000}s with no Meshtastic devices — cancelling`);
-        callback('');
-        scanState = null;
-      }, SCAN_TIMEOUT_MS);
-    }
-    scanState.ticks++;
+    const usbNames = new Set(manager?.usbConnectedIdentities() ?? []);
+    const annotated: BleScanEntry[] = deviceList.map((d) => ({
+      deviceId: d.deviceId,
+      deviceName: d.deviceName || '',
+      alreadyOnUsb: usbNames.has(d.deviceName || ''),
+    }));
 
-    if (deviceList.length === 0) {
-      // Throttle the "still scanning" log so it doesn't flood. Electron
-      // fires this event repeatedly while scanning even with no results.
-      if (scanState.ticks === 1 || scanState.ticks % 20 === 0) {
-        const elapsed = ((Date.now() - scanState.startedAt) / 1000).toFixed(1);
-        console.log(`[ble] scan: still no Meshtastic devices in range (${elapsed}s elapsed, tick ${scanState.ticks})`);
-      }
-      return;
+    if (!bleScan) {
+      bleScan = { callback, latestDevices: annotated, timeoutId: null, startedAt: Date.now() };
+      bleScan.timeoutId = setTimeout(() => endBleScan('', 'timeout'), BLE_SCAN_TIMEOUT_MS);
+      console.log('[ble] scan started');
+    } else {
+      // Chromium re-fires this event as the scan grows. The latest callback
+      // is what we should resolve when the user finally picks — older ones
+      // become no-ops as soon as a more recent fire arrives.
+      bleScan.callback = callback;
+      bleScan.latestDevices = annotated;
     }
-
-    // Skip any device whose advertised name matches a radio we already have
-    // attached over USB. Forcing concurrent USB + BLE on the same ESP32-S3
-    // chip starves the USB CDC interrupt and Meshtastic firmware can wedge.
-    const usbNames = new Set(manager.usbConnectedIdentities());
-    const candidates = deviceList.filter((d) => !usbNames.has(d.deviceName || ''));
-    const skipped = deviceList.filter((d) => usbNames.has(d.deviceName || ''));
-    if (skipped.length > 0) {
-      console.log(`[ble] scan: skipping ${skipped.length} device(s) already on USB: ${skipped.map((d) => d.deviceName || d.deviceId).join(', ')}`);
-    }
-
-    if (candidates.length === 0) {
-      // Every candidate is a radio we already have on USB. Don't pair —
-      // wait for a non-USB device to appear, or time out.
-      if (scanState.ticks === 1 || scanState.ticks % 20 === 0) {
-        const elapsed = ((Date.now() - scanState.startedAt) / 1000).toFixed(1);
-        console.log(`[ble] scan: all ${deviceList.length} visible device(s) are already on USB (${elapsed}s elapsed)`);
-      }
-      return;
-    }
-
-    const chosen = candidates[0];
-    const elapsed = ((Date.now() - scanState.startedAt) / 1000).toFixed(1);
-    console.log(`[ble] scan: ${candidates.length} pairable device(s) after ${elapsed}s — auto-selecting "${chosen.deviceName || '(no name)'}" (id=${chosen.deviceId})`);
-    if (candidates.length > 1) {
-      console.log(`[ble] scan: other candidates ignored: ${candidates.slice(1).map((d) => d.deviceName || d.deviceId).join(', ')}`);
-    }
-    if (scanState.cancelTimer) clearTimeout(scanState.cancelTimer);
-    scanState = null;
-    callback(chosen.deviceId);
+    const elapsed = Date.now() - bleScan.startedAt;
+    console.log(`[ble] scan: ${annotated.length} device(s) visible (${Math.round(elapsed / 1000)}s elapsed)`);
+    mainWindow?.webContents.send('mesh:bleScanUpdate', { devices: annotated, elapsedMs: elapsed });
   });
 }
 
@@ -264,6 +259,12 @@ app.whenReady().then(async () => {
     console.log(`[ble] bleStartSession → connId=${id}`);
     return id;
   });
+  // Renderer → main: the BleScanModal lets the user pick or cancel during
+  // the live scan; these handlers resolve the cached select-bluetooth-device
+  // callback so requestDevice() in the renderer can finally return.
+  ipcMain.handle('mesh:bleScanPick',   (_e, deviceId: string) => endBleScan(deviceId, 'picked'));
+  ipcMain.handle('mesh:bleScanCancel', () => endBleScan('', 'cancelled'));
+  ipcMain.handle('mesh:retrySync',     (_e, connId: string) => manager.retrySync(connId));
   // Throttled byte counter per connId so we get one log line per second of
   // sustained traffic instead of one per frame.
   const bleRxTotals = new Map<string, { bytes: number; frames: number; sinceLogged: number }>();
@@ -372,6 +373,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('mesh:telemetryHistory', (_e, args: { sinceMs?: number } = {}) => {
     const since = args.sinceMs ?? Date.now() - 7 * 24 * 60 * 60 * 1000;
     return db.getRecentTelemetry(since);
+  });
+  ipcMain.handle('mesh:positionTrails', (_e, args: { sinceMs?: number } = {}) => {
+    const since = args.sinceMs ?? Date.now() - 24 * 60 * 60 * 1000;
+    return db.getRecentPositionTrails(since);
   });
   ipcMain.handle('mesh:links', () => db.getLinks());
 });

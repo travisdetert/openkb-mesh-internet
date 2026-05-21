@@ -60,8 +60,34 @@ interface BleSession {
   fromRadio: BluetoothRemoteGATTCharacteristic;
   toRadio: BluetoothRemoteGATTCharacteristic;
   fromNum: BluetoothRemoteGATTCharacteristic;
+  /** ms epoch of session start — used by the polling pump to decide
+   *  how aggressively to poll fromRadio. */
+  startedAt: number;
+  /** Cancels the interval timer when the session closes. */
+  pollTimer: ReturnType<typeof setTimeout> | null;
+  /** Cumulative drain stats so log lines stay readable as traffic grows. */
+  framesPulledTotal: number;
+  /** Chained promise of the most recent GATT op. Chromium serializes
+   *  all GATT operations per device — concurrent calls fail with "GATT
+   *  operation already in progress". Every read/write chains onto this
+   *  so the post-write drain, poll pump, and notification handler all
+   *  share a single queue. */
+  gattLock: Promise<unknown>;
   /** Set when we've started tearing down so async callbacks bail. */
   closing: boolean;
+}
+
+/**
+ * Serialize a GATT operation on a session. Every read/write must go
+ * through this — including the post-write drains, the poll pump's reads,
+ * and the notification handler's drains. Chromium will throw "GATT
+ * operation already in progress" if two run in parallel on the same
+ * device.
+ */
+function withGatt<T>(session: BleSession, fn: () => Promise<T>): Promise<T> {
+  const next = session.gattLock.then(fn, fn);
+  session.gattLock = next.catch(() => { /* swallow so subsequent ops aren't poisoned */ });
+  return next;
 }
 
 const sessions = new Map<string, BleSession>(); // connId → session
@@ -87,32 +113,73 @@ function base64ToBytes(b64: string): Uint8Array {
  * Each non-empty read = one FromRadio protobuf message which we hand off
  * to main for decoding. The radio queues these and we have to pull them
  * one at a time — there's no "give me everything" GATT primitive.
+ *
+ * `source` lets us tag the log line with what triggered the drain so we
+ * can see at a glance whether responses are coming via notifications,
+ * post-write probes, or the polling pump (some firmware never fires the
+ * notification — polling is the only reliable signal there).
  */
-async function drainFromRadio(session: BleSession): Promise<number> {
+async function drainFromRadio(session: BleSession, source: 'notify' | 'post-write' | 'poll' | 'initial'): Promise<number> {
   let framesPulled = 0;
   for (let i = 0; i < 64; i++) { // safety cap per drain
     if (session.closing) return framesPulled;
     let value: DataView;
     try {
-      value = await session.fromRadio.readValue();
+      value = await withGatt(session, () => session.fromRadio.readValue());
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[ble] fromRadio read failed: ${msg}`);
+      console.warn(`[ble] fromRadio read failed (${source}): ${msg}`);
       await window.mesh.bleError({ connId: session.connId, message: `fromRadio read failed: ${msg}` });
       return framesPulled;
     }
-    if (value.byteLength === 0) return framesPulled; // queue empty
+    if (value.byteLength === 0) {
+      // Empty read = queue drained. Only log when this drain pulled
+      // nothing AT ALL, so we can see "post-write drain returned empty"
+      // patterns — that's the smoking gun for a wedged radio.
+      if (framesPulled === 0 && source !== 'poll') {
+        console.log(`[ble] ${source} drain ${session.connId}: queue empty`);
+      }
+      return framesPulled;
+    }
     const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     framesPulled++;
+    session.framesPulledTotal++;
     await window.mesh.bleRxFrame({ connId: session.connId, bytes: bytesToBase64(bytes) });
   }
-  console.warn(`[ble] drainFromRadio hit safety cap (64 frames) — radio may be very chatty`);
+  console.warn(`[ble] drainFromRadio hit safety cap (64 frames, ${source}) — radio may be very chatty`);
   return framesPulled;
+}
+
+/**
+ * Polling pump. Some Meshtastic firmware (notably older nRF52 builds)
+ * doesn't always emit a fromNum notification after processing wantConfig
+ * — the response payloads are queued in fromRadio but we'd never go read
+ * them if we relied on notifications alone. So we poll fromRadio on a
+ * fixed cadence, aggressive for the first 15 seconds (when wantConfig
+ * responses arrive) and relaxed afterwards. Reads against an empty
+ * queue are cheap (one short GATT op) so the bandwidth cost is minor.
+ */
+function schedulePoll(session: BleSession): void {
+  if (session.closing) return;
+  const elapsed = Date.now() - session.startedAt;
+  const intervalMs = elapsed < 15_000 ? 250 : 2_000;
+  session.pollTimer = setTimeout(async () => {
+    if (session.closing) return;
+    const n = await drainFromRadio(session, 'poll');
+    if (n > 0) console.log(`[ble] poll-drain ${session.connId}: pulled ${n} frame(s)`);
+    schedulePoll(session);
+  }, intervalMs);
 }
 
 /**
  * Main-side handler: write a ToRadio frame to the GATT characteristic.
  * Bound once on module init and routes by connId to the right session.
+ *
+ * After every successful write, we schedule two follow-up drains (at
+ * 200ms and 800ms) — many firmware builds queue the response without
+ * firing a fromNum notification, so a passive listener would never go
+ * read it. The probes are cheap when the queue is empty and recover
+ * sync when the queue is not.
  */
 async function handleTxFrame(p: { connId: string; bytes: string }): Promise<void> {
   const session = sessions.get(p.connId);
@@ -125,8 +192,15 @@ async function handleTxFrame(p: { connId: string; bytes: string }): Promise<void
     // .buffer can be a SharedArrayBuffer in some TS lib configs; copy into a
     // plain Uint8Array to make the BufferSource type happy.
     const arr = new Uint8Array(payload);
-    await session.toRadio.writeValueWithoutResponse(arr.buffer as ArrayBuffer);
+    // writeValueWithResponse is more reliable than writeWithoutResponse —
+    // it forces the radio's GATT stack to ACK the write before resolving,
+    // so a silent drop surfaces as an error instead of looking successful.
+    // Trade-off: ~5ms slower per write, which is negligible for handshake
+    // bursts.
+    await withGatt(session, () => session.toRadio.writeValueWithResponse(arr.buffer as ArrayBuffer));
     console.log(`[ble] tx → ${session.connId} ${payload.length}b`);
+    setTimeout(() => { void drainFromRadio(session, 'post-write'); }, 200);
+    setTimeout(() => { void drainFromRadio(session, 'post-write'); }, 800);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[ble] toRadio write failed for ${session.connId}: ${msg}`);
@@ -143,6 +217,7 @@ async function handleDisconnectRequest(p: { connId: string }): Promise<void> {
 async function closeSession(session: BleSession): Promise<void> {
   if (session.closing) return;
   session.closing = true;
+  if (session.pollTimer) { clearTimeout(session.pollTimer); session.pollTimer = null; }
   try { await session.fromNum.stopNotifications(); } catch { /* ignore */ }
   try { session.server.disconnect(); } catch { /* ignore */ }
   sessions.delete(session.connId);
@@ -181,20 +256,19 @@ export async function connectBluetoothDevice(onProgress?: (p: BleProgress) => vo
   }
 
   report({ phase: 'requesting-device' });
-  // Match on EITHER the Meshtastic service UUID OR the default device-name
-  // prefix. Some firmware (nRF52 especially) fits the service UUID into the
-  // scan response instead of the main advertising packet, and Chromium's
-  // services-filter doesn't always match scan-response data — so we also
-  // accept any device whose advertised name starts with "Meshtastic" as a
-  // fallback. optionalServices makes the GATT service reachable after
-  // connecting via the name-prefix path.
+  // Accept ALL nearby BLE devices so the chooser modal can show the
+  // complete list — historically we filtered by service UUID + name
+  // prefix, but some Meshtastic firmware (nRF52 in particular) only
+  // includes the service UUID in the scan response (not the primary
+  // advertising packet), and Chromium's services filter doesn't always
+  // match scan-response data. The modal badges devices whose name looks
+  // Meshtastic-ish, and the user picks which one to try. optionalServices
+  // is still required so getPrimaryService(SERVICE_UUID) is reachable
+  // after the GATT connection completes.
   let device: BluetoothDevice;
   try {
     device = await navigator.bluetooth.requestDevice({
-      filters: [
-        { services: [SERVICE_UUID] },
-        { namePrefix: 'Meshtastic' },
-      ],
+      acceptAllDevices: true,
       optionalServices: [SERVICE_UUID],
     });
   } catch (err) {
@@ -252,24 +326,32 @@ export async function connectBluetoothDevice(onProgress?: (p: BleProgress) => vo
 
   const connId = await window.mesh.bleStartSession(deviceName);
   report({ phase: 'session-registered', deviceName, connId });
-  const session: BleSession = { connId, device, server, fromRadio, toRadio, fromNum, closing: false };
+  const session: BleSession = {
+    connId, device, server, fromRadio, toRadio, fromNum,
+    startedAt: Date.now(),
+    pollTimer: null,
+    framesPulledTotal: 0,
+    gattLock: Promise.resolve(),
+    closing: false,
+  };
   sessions.set(connId, session);
 
   // GATT disconnect handler — notify main so the controller can tear down.
   device.addEventListener('gattserverdisconnected', () => {
     if (session.closing) return;
     session.closing = true;
+    if (session.pollTimer) { clearTimeout(session.pollTimer); session.pollTimer = null; }
     sessions.delete(connId);
-    console.log(`[ble] gattserverdisconnected ${connId} (${deviceName})`);
+    console.log(`[ble] gattserverdisconnected ${connId} (${deviceName}, ${session.framesPulledTotal} frames pulled total)`);
     void window.mesh.bleDisconnected({ connId, reason: 'gatt server disconnected' });
   });
 
-  // Subscribe to fromNum, drain on every notification. The radio also fires
-  // an initial notification once notifications are enabled, so we'll catch
-  // any already-queued FromRadio frames without needing a separate trigger.
+  // Subscribe to fromNum, drain on every notification. We can't fully rely
+  // on these — some firmware queues fromRadio without notifying — but when
+  // they DO fire it's the fastest path.
   fromNum.addEventListener('characteristicvaluechanged', () => {
     if (session.closing) return;
-    void drainFromRadio(session).then((n) => {
+    void drainFromRadio(session, 'notify').then((n) => {
       if (n > 0) console.log(`[ble] notify→drain ${connId} pulled ${n} frame${n === 1 ? '' : 's'}`);
     });
   });
@@ -284,8 +366,12 @@ export async function connectBluetoothDevice(onProgress?: (p: BleProgress) => vo
   }
 
   report({ phase: 'draining-initial', deviceName, connId });
-  const initial = await drainFromRadio(session);
+  const initial = await drainFromRadio(session, 'initial');
   report({ phase: 'connected', deviceName, connId, framesDrained: initial });
+
+  // Start the polling pump — runs alongside notifications so we don't
+  // miss queued frames when the firmware doesn't notify.
+  schedulePoll(session);
 
   return connId;
 }

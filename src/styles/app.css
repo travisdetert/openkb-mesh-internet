@@ -3168,3 +3168,409 @@ h1.page-title { font-size: 18px; margin: 0 0 4px; }
 .range-card .value { font-size: 22px; font-family: var(--mono); }
 .range-card .unit { font-size: 13px; color: var(--text-dim); margin-left: 4px; }
 .range-card .hint { color: var(--text-faint); font-size: 11.5px; margin-top: 6px; }
+
+/* ── BLE scan modal ────────────────────────────────────────────────── */
+.ble-scan-modal {
+  width: 560px;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 80px);
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px 22px 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+.ble-scan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.ble-scan-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+  font-family: var(--mono);
+}
+.ble-scan-spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: ble-pulse 1s ease-in-out infinite;
+}
+@keyframes ble-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.85); }
+  50%      { opacity: 1;   transform: scale(1.15); }
+}
+.ble-scan-empty {
+  padding: 12px 14px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.02);
+}
+.ble-scan-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  max-height: 50vh;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ble-scan-row {
+  width: 100%;
+  text-align: left;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.ble-scan-row:hover:not(:disabled) {
+  background: rgba(92, 200, 255, 0.08);
+  border-color: var(--accent);
+}
+.ble-scan-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.ble-scan-row.meshy {
+  border-left: 3px solid var(--good);
+}
+.ble-scan-row.usb-warn {
+  border-left: 3px solid var(--warn);
+}
+.ble-scan-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+.ble-scan-row-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ble-scan-row-id {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.ble-scan-pill {
+  font-size: 10px;
+  font-family: var(--mono);
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ble-scan-pill.good {
+  color: var(--good);
+  background: rgba(102, 211, 154, 0.10);
+  border: 1px solid rgba(102, 211, 154, 0.4);
+}
+.ble-scan-pill.warn {
+  color: var(--warn);
+  background: rgba(255, 209, 102, 0.10);
+  border: 1px solid rgba(255, 209, 102, 0.4);
+}
+.ble-scan-footer {
+  margin: 12px 0 0;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+/* ── BLE pair button (sits below the USB port picker) ──────────────── */
+.ble-pair-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+.ble-pair-sep {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.ble-pair-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(92, 200, 255, 0.06);
+  border: 1px solid rgba(92, 200, 255, 0.35);
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+  flex: 1;
+}
+.ble-pair-btn:hover:not(:disabled) {
+  background: rgba(92, 200, 255, 0.12);
+  border-color: var(--accent);
+}
+.ble-pair-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ble-pair-icon { font-size: 18px; }
+.ble-pair-text { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
+.ble-pair-label { font-size: 13.5px; font-weight: 600; }
+.ble-pair-sub   { font-size: 11.5px; color: var(--text-dim); }
+
+/* ── Sync activity tape ────────────────────────────────────────────── */
+.sync-tape-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+.sync-tape-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+.sync-tape-meta {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.sync-tape {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+  padding: 6px 4px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.sync-tape-empty {
+  color: var(--text-faint);
+  font-style: italic;
+  padding: 4px 8px;
+}
+.sync-tape-row {
+  display: grid;
+  grid-template-columns: 50px 14px 1fr auto;
+  gap: 6px;
+  align-items: baseline;
+  padding: 1px 8px;
+  border-radius: 3px;
+}
+.sync-tape-row:hover { background: rgba(255, 255, 255, 0.04); }
+.sync-tape-time {
+  color: var(--text-faint);
+  text-align: right;
+}
+.sync-tape-glyph { text-align: center; font-weight: 700; }
+.sync-tape-text  { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sync-tape-detail {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+.sync-tape-row.sync-tape-retry .sync-tape-text,
+.sync-tape-row.sync-tape-stall .sync-tape-text { font-weight: 600; }
+.sync-tape-row.sync-tape-identity { background: rgba(92, 200, 255, 0.06); }
+
+/* ── Map: scale bar (bottom-left) ──────────────────────────────────── */
+.map-scale-bar {
+  /* Sits beside the coverage legend when both are showing — flex column
+   * placement is inherited from .map-overlay-bl. Min width keeps the
+   * label readable when the bar shrinks at high zoom. */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: rgba(15, 17, 21, 0.78);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 5px 8px 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 60px;
+}
+.map-scale-bar-line {
+  /* The horizontal segment. End caps drawn with border-left/right so the
+   * bar stays crisp regardless of how thin it gets. */
+  height: 6px;
+  border-left: 2px solid var(--text);
+  border-right: 2px solid var(--text);
+  border-bottom: 2px solid var(--text);
+  transition: width 0.2s ease;
+}
+.map-scale-bar-label {
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.04em;
+}
+
+/* ── Map: clickable cursor coords ──────────────────────────────────── */
+button.map-coords {
+  background: rgba(15, 17, 21, 0.78);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 5px 9px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+button.map-coords:hover { background: rgba(92, 200, 255, 0.18); color: var(--accent); }
+
+/* ── Map: keyboard shortcuts overlay ───────────────────────────────── */
+.map-help-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(15, 17, 21, 0.94);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px 18px 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  z-index: 20;
+  min-width: 280px;
+}
+.map-help-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 10px;
+}
+.map-help-table { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+.map-help-table td { padding: 3px 8px 3px 0; vertical-align: top; }
+.map-help-table td:first-child { color: var(--text); white-space: nowrap; }
+.map-help-table kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.04);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text);
+}
+.map-help-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 18px;
+  width: 24px;
+  height: 24px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.map-help-close:hover { color: var(--text); }
+
+/* ── Map: top-left overlay position (search) ───────────────────────── */
+.map-overlay-tl { top: 8px; left: 8px; flex-direction: column; align-items: flex-start; }
+
+/* ── Map: search box + results dropdown ────────────────────────────── */
+.map-search {
+  /* Width matches the dropdown so the input doesn't visually jump when
+   * results appear. Backdrop blur keeps the underlying map readable. */
+  width: 240px;
+}
+.map-search input {
+  width: 100%;
+  background: rgba(15, 17, 21, 0.86);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 6px 9px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+.map-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(92, 200, 255, 0.22);
+}
+.map-search input::placeholder { color: var(--text-faint); }
+.map-search-results {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 4px;
+  background: rgba(15, 17, 21, 0.94);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  max-height: 240px;
+  overflow-y: auto;
+}
+.map-search-results li { margin: 0; }
+.map-search-results button {
+  /* Each result is a button so it gets free keyboard activation. The
+   * grid layout keeps the short-name column-aligned across results. */
+  width: 100%;
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  padding: 4px 6px;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.map-search-results button:hover { background: rgba(92, 200, 255, 0.14); }
+.map-search-short {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+.map-search-long {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

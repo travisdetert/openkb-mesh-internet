@@ -133,6 +133,13 @@ declare global {
     mapReportPositionPrecision?: number;
   }
 
+  interface SyncStatus {
+    startedAt: number;
+    lastFrameAt: number;
+    retries: number;
+    failure?: 'stall' | 'transport';
+  }
+
   interface ConnectionState {
     status: 'disconnected' | 'connecting' | 'configuring' | 'ready';
     portPath?: string;
@@ -147,6 +154,7 @@ declare global {
     mqttConfig?: MQTTConfig;
     channels?: MeshChannel[];
     error?: string;
+    sync?: SyncStatus;
   }
 
   interface NodeRecord {
@@ -369,6 +377,9 @@ declare global {
     applyChannelSetUrl: (args: { connId: string; url: string }) => Promise<boolean>;
     /** Ask the radio to redump its nodeDB now (in addition to the 15-min auto-refresh). */
     refresh:            (connId: string) => Promise<void>;
+    /** Manually re-issue wantConfig during a stalled sync. Returns false if
+     *  the radio isn't in `configuring` (nothing to retry). */
+    retrySync:          (connId: string) => Promise<boolean>;
     /** Timestamp (ms epoch) of the last completed nodeDB refresh, or 0. */
     lastRefreshAt:      (connId: string) => Promise<number>;
     /** Broadcast our NodeInfo with wantResponse=true to nudge peers to reply
@@ -420,6 +431,11 @@ declare global {
     bleDisconnected:    (args: { connId: string; reason?: string }) => Promise<void>;
     /** Signal a GATT-side error so the controller can surface it. */
     bleError:           (args: { connId: string; message: string }) => Promise<void>;
+    /** Renderer→main: pick a BLE device by deviceId during an active scan. */
+    bleScanPick:        (deviceId: string) => Promise<void>;
+    /** Renderer→main: cancel the active BLE scan; renderer's requestDevice
+     *  will reject with NotFoundError. */
+    bleScanCancel:      () => Promise<void>;
     /** Auto-connect to confirmed Meshtastic USB devices as they appear. */
     getAutoConnect:     () => Promise<boolean>;
     setAutoConnect:     (enabled: boolean) => Promise<void>;
@@ -431,6 +447,9 @@ declare global {
     dbStats: () => Promise<DbStats>;
     pathLossSamples: (args?: { connId?: string; sinceMs?: number }) => Promise<PathLossSample[]>;
     telemetryHistory: (args?: { sinceMs?: number }) => Promise<TelemetryHistoryRow[]>;
+    /** Every position fix across every node since `sinceMs` (default 24h),
+     *  ordered by (node_num, ts ASC) for direct chronological consumption. */
+    positionTrails:   (args?: { sinceMs?: number }) => Promise<Array<{ node_num: number; lat: number; lon: number; altitude: number; ts: number }>>;
     links: () => Promise<LinkRow[]>;
 
     onState: (cb: (p: { connId: string; state: ConnectionState }) => void) => () => void;
@@ -453,6 +472,11 @@ declare global {
     onOwnedAntennaChanged: (cb: (p: { antennaId: string; quantity: number; notes: string }) => void) => () => void;
     onBleTxFrame: (cb: (p: { connId: string; bytes: string }) => void) => () => void;
     onBleDisconnectRequest: (cb: (p: { connId: string }) => void) => () => void;
+    /** Live BLE scan progress — fired each time the OS-reported device
+     *  list grows. The modal renders directly from this stream. */
+    onBleScanUpdate: (cb: (p: { devices: Array<{ deviceId: string; deviceName: string; alreadyOnUsb: boolean }>; elapsedMs: number }) => void) => () => void;
+    /** Scan resolved (pick / cancel / timeout). The modal closes on this. */
+    onBleScanEnded: (cb: (p: { reason: 'picked' | 'cancelled' | 'timeout'; deviceId: string }) => void) => () => void;
   }
 
   type ResetProfile = 'esp32' | 'esp32-bootloader' | 'nrf52-dfu' | 'rp2040-bootsel';

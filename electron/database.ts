@@ -221,6 +221,18 @@ export class MeshDatabase {
       .all(num, limit) as PositionRow[];
   }
 
+  /**
+   * All position fixes across every node since `sinceMs`, ordered so a
+   * renderer can group by node_num and draw chronological trails without
+   * a second sort. Used by the Map panel's "trails" overlay to visualize
+   * where mobile nodes have moved over the last N hours.
+   */
+  getRecentPositionTrails(sinceMs: number): PositionRow[] {
+    return this.db.prepare(
+      `SELECT * FROM positions WHERE ts >= ? ORDER BY node_num, ts ASC`,
+    ).all(sinceMs) as PositionRow[];
+  }
+
   // ── Device telemetry ───────────────────────────────────────────────────
 
   insertDeviceTelemetry(num: number, battery: number, voltage: number, chanUtil: number, airUtilTx: number, ts: number) {

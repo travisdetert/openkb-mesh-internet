@@ -1,9 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useMeshContext } from '../hooks/MeshContext';
 import { SettingsPanel } from './panels/SettingsPanel';
 import { ChannelsPanel } from './panels/ChannelsPanel';
 import { MqttPanel } from './panels/MqttPanel';
+import { BleScanModal } from './BleScanModal';
 import type { TabId } from './TopNav';
+import { ROLE_NAMES } from '../lib/device-roles';
 
 function pskDescription(pskLength: number): string {
   if (pskLength === 0) return 'open (no PSK)';
@@ -38,12 +40,6 @@ interface Props {
   /** Jump to another top-level panel — used by the "configure this radio" links. */
   go: (id: TabId) => void;
 }
-
-const ROLE_NAMES: Record<number, string> = {
-  0: 'CLIENT', 1: 'CLIENT_MUTE', 2: 'ROUTER', 3: 'ROUTER_CLIENT',
-  4: 'REPEATER', 5: 'TRACKER', 6: 'SENSOR', 7: 'TAK',
-  8: 'CLIENT_HIDDEN', 9: 'LOST_AND_FOUND', 10: 'TAK_TRACKER', 11: 'ROUTER_LATE',
-};
 
 type StageKey = 'discover' | 'open' | 'configure' | 'sync' | 'ready';
 interface Stage { key: StageKey; label: string; hint: string; }
@@ -179,19 +175,12 @@ export function ConnectionWizard({
       // Clear the status after a moment so it doesn't linger.
       setTimeout(() => setBleStatus(''), 4000);
     } catch (e: any) {
-      // In our auto-pick flow we don't show an OS chooser, so NotFoundError
-      // here means the main-process scan timed out without seeing any
-      // Meshtastic-advertising device — not a user cancel. Surface a
-      // useful diagnosis pointing at the most common causes.
+      // With the renderer-driven chooser, NotFoundError means the user hit
+      // Cancel or the 60s safety timeout fired — neither needs the giant
+      // diagnostic. The modal itself surfaces "nothing visible" tips while
+      // the scan is live, which is the right time to read them.
       const msg = e?.message ?? String(e);
       if (e?.name === 'NotFoundError' || /User cancelled/i.test(msg)) {
-        setErr(
-          'No Meshtastic radio advertising over Bluetooth was found in 15 seconds. Common causes:\n' +
-          '• The radio has BLE disabled — check the "BLE off" badge on its connection chip above.\n' +
-          '• Another client (the official Meshtastic phone app on this or a nearby device) is already paired — disconnect it first.\n' +
-          '• Some firmware suppresses BLE advertising while a USB host is active; try unplugging USB and scanning again.\n' +
-          '• The radio is out of range or powered off.'
-        );
         setBleStatus('');
       } else {
         setErr(`Bluetooth: ${msg}`);
@@ -220,6 +209,9 @@ export function ConnectionWizard({
 
   return (
     <div className="page">
+      {/* Renders itself whenever a BLE scan is active — driven by main's
+          scan-update events, not local state. */}
+      <BleScanModal />
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
         <h1 className="page-title">
           {adding ? 'Add another radio'
@@ -254,7 +246,7 @@ export function ConnectionWizard({
             const sub = isRebooting
               ? (rebootRemaining > 0 ? `↻ rebooting in ${rebootRemaining}s…` : '↻ rebooting now…')
               : c.state.status === 'ready' ? `${c.nodes.length} nodes`
-              : c.state.status === 'configuring' ? 'syncing'
+              : c.state.status === 'configuring' ? (c.state.sync && c.state.sync.retries > 0 ? `syncing · retry ${c.state.sync.retries}` : 'syncing')
               : c.state.status === 'connecting' ? 'opening'
               : 'offline';
             // BLE indicator: the radio's own BluetoothConfig (synced over USB).
@@ -403,17 +395,24 @@ export function ConnectionWizard({
             <button className="primary" disabled={busy || !selected} onClick={connect}>
               {busy ? 'Connecting…' : 'Connect'}
             </button>
-            <button
-              className="ghost"
-              disabled={busy}
-              onClick={connectBluetooth}
-              title="Pair with a Meshtastic radio over Bluetooth LE. Requires the radio to have BT enabled (it is by default)."
-            >
-              {busy ? '…' : 'Bluetooth…'}
-            </button>
             {adding && (
               <button className="ghost" onClick={() => { setAdding(false); setErr(''); }}>Cancel</button>
             )}
+          </div>
+          <div className="ble-pair-row">
+            <span className="ble-pair-sep">— or —</span>
+            <button
+              className="ble-pair-btn"
+              disabled={busy}
+              onClick={connectBluetooth}
+              title="Pair with a Meshtastic radio over Bluetooth LE. The radio must have BLE enabled and not already be paired with another client (e.g. the official phone app)."
+            >
+              <span className="ble-pair-icon" aria-hidden="true">📶</span>
+              <span className="ble-pair-text">
+                <span className="ble-pair-label">Connect via Bluetooth</span>
+                <span className="ble-pair-sub">Live scan · pick from a list of nearby BLE radios</span>
+              </span>
+            </button>
           </div>
           {availablePorts.length > 0 && (
             <p style={{ margin: '0 0 0 0', color: 'var(--text-faint)', fontSize: 11.5 }}>
@@ -592,18 +591,8 @@ export function ConnectionWizard({
           nodesCount={nodesCount}
           channelsCount={channelsCount}
           elapsed={elapsed}
+          connId={activeConnId ?? undefined}
         />
-      )}
-
-      {/* Inline diagnostics */}
-      {state.status === 'configuring' && elapsed > 8 && (
-        <div className="info-card" style={{ borderLeftColor: 'var(--warn)', marginBottom: 14 }}>
-          <p style={{ margin: 0, fontSize: 12 }}>
-            <strong>Sync is taking a while ({elapsed}s).</strong> Typical handshake completes in 2–5 seconds.
-            If you're stuck for more than 30 seconds, the radio may be wedged — try unplugging/replugging the cable, or
-            press the radio's button to wake it from deep sleep.
-          </p>
-        </div>
       )}
       {isReady && lastPacketAt && Date.now() - lastPacketAt > 5 * 60_000 && (
         <div className="info-card" style={{ borderLeftColor: 'var(--warn)', marginBottom: 14 }}>
@@ -827,17 +816,243 @@ function StageChip({ stage, status }: { stage: Stage; status: 'done' | 'active' 
   );
 }
 
+interface SyncTapeEvent {
+  at: number;
+  kind: 'identity' | 'metadata' | 'lora' | 'device' | 'position' | 'power' | 'network' | 'display' | 'bluetooth' | 'mqtt' | 'channel' | 'node' | 'retry' | 'stall';
+  text: string;
+  detail?: string;
+}
+
+function fmtSinceStart(at: number, startedAt: number): string {
+  const d = Math.max(0, at - startedAt);
+  if (d < 1000) return `+${d}ms`;
+  return `+${(d / 1000).toFixed(1)}s`;
+}
+
+function tapeKindColor(kind: SyncTapeEvent['kind']): string {
+  switch (kind) {
+    case 'identity':  return 'var(--accent)';
+    case 'metadata':  return 'var(--accent)';
+    case 'channel':   return 'var(--good)';
+    case 'node':      return 'var(--text)';
+    case 'retry':     return 'var(--warn)';
+    case 'stall':     return 'var(--bad)';
+    default:          return 'var(--text-dim)';
+  }
+}
+
+function tapeKindGlyph(kind: SyncTapeEvent['kind']): string {
+  switch (kind) {
+    case 'identity':  return '#';
+    case 'metadata':  return 'i';
+    case 'lora':
+    case 'device':
+    case 'position':
+    case 'power':
+    case 'network':
+    case 'display':
+    case 'bluetooth':
+    case 'mqtt':      return '⚙';
+    case 'channel':   return '⛓';
+    case 'node':      return '•';
+    case 'retry':     return '↻';
+    case 'stall':     return '⚠';
+  }
+}
+
 function SyncProgress({
   state,
   nodesCount,
   channelsCount,
   elapsed,
+  connId,
 }: {
   state: ConnectionState;
   nodesCount: number;
   channelsCount: number;
   elapsed: number;
+  /** Active connection id — used for the manual retry button and the
+   *  per-connection NodeInfo subscription that feeds the activity tape. */
+  connId?: string;
 }) {
+  // Watchdog-derived liveness signal. Counts up between frames; resets
+  // every time the controller observes a new FromRadio. Past 4s without
+  // a frame we tint it warn so the user can see the stall coming.
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(id);
+  }, []);
+  const sinceLastFrameMs = state.sync ? Math.max(0, now - state.sync.lastFrameAt) : 0;
+  const sinceLastFrameLabel = state.sync
+    ? sinceLastFrameMs < 800 ? 'just now'
+      : sinceLastFrameMs < 1500 ? '1s ago'
+      : `${(sinceLastFrameMs / 1000).toFixed(1)}s ago`
+    : '—';
+  const livenessTone =
+    !state.sync ? 'dim'
+    : sinceLastFrameMs < 1500 ? 'good'
+    : sinceLastFrameMs < 4000 ? 'warn'
+    : 'bad';
+  const retries = state.sync?.retries ?? 0;
+
+  const [retrying, setRetrying] = useState(false);
+  const onRetry = async () => {
+    if (!connId) return;
+    setRetrying(true);
+    try { await window.mesh.retrySync(connId); }
+    finally { setTimeout(() => setRetrying(false), 800); }
+  };
+
+  // ── Live activity tape ──────────────────────────────────────────────
+  // Each interpreted FromRadio frame appears as a one-liner, time-stamped
+  // relative to sync start. We derive this entirely from state diffs +
+  // the per-connection node subscription, so no new IPC was needed: the
+  // controller already streams these as state/node events.
+  const [tape, setTape] = useState<SyncTapeEvent[]>([]);
+  const TAPE_MAX = 80;
+  const pushTape = (ev: SyncTapeEvent | SyncTapeEvent[]) => {
+    setTape((cur) => {
+      const next = cur.concat(ev);
+      return next.length > TAPE_MAX ? next.slice(next.length - TAPE_MAX) : next;
+    });
+  };
+
+  // Reset whenever a fresh sync starts (startedAt is the canonical "epoch").
+  const syncStartedAt = state.sync?.startedAt ?? 0;
+  useEffect(() => {
+    setTape([]);
+  }, [syncStartedAt]);
+
+  // Diff state across renders → emit one event for each freshly-arrived
+  // config / identity / channel. Bounded to the configuring window so the
+  // tape doesn't keep growing once we hit ready.
+  const prevStateRef = useRef<{
+    myNodeNum?: number;
+    firmwareVersion?: string;
+    hasBluetooth?: boolean;
+    loraConfig?: boolean;
+    deviceConfig?: boolean;
+    positionConfig?: boolean;
+    powerConfig?: boolean;
+    networkConfig?: boolean;
+    displayConfig?: boolean;
+    bluetoothConfig?: boolean;
+    mqttConfig?: boolean;
+    channelCount: number;
+    retries: number;
+    stalled: boolean;
+  }>({ channelCount: 0, retries: 0, stalled: false });
+
+  useEffect(() => {
+    if (state.status !== 'configuring' && state.status !== 'ready') return;
+    const prev = prevStateRef.current;
+    const newEvents: SyncTapeEvent[] = [];
+    const now = Date.now();
+
+    if (state.myInfo?.myNodeNum && state.myInfo.myNodeNum !== prev.myNodeNum) {
+      newEvents.push({ at: now, kind: 'identity', text: `Radio identity !${state.myInfo.myNodeNum.toString(16).padStart(8, '0')}` });
+    }
+    if (state.myInfo?.firmwareVersion && state.myInfo.firmwareVersion !== prev.firmwareVersion) {
+      const caps: string[] = [];
+      if (state.myInfo.hasBluetooth) caps.push('BLE');
+      if (state.myInfo.hasWifi) caps.push('Wi-Fi');
+      newEvents.push({ at: now, kind: 'metadata', text: `Firmware ${state.myInfo.firmwareVersion}`, detail: caps.length ? caps.join(' · ') : undefined });
+    }
+    if (state.loraConfig && !prev.loraConfig) {
+      const lc = state.loraConfig;
+      newEvents.push({ at: now, kind: 'lora', text: 'LoRa config', detail: `${lc.regionName} · ${lc.usePreset ? lc.modemPresetName : 'custom'}` });
+    }
+    if (state.deviceConfig && !prev.deviceConfig) {
+      newEvents.push({ at: now, kind: 'device', text: 'Device config', detail: `role=${state.deviceConfig.role}` });
+    }
+    if (state.positionConfig && !prev.positionConfig) {
+      newEvents.push({ at: now, kind: 'position', text: 'Position config' });
+    }
+    if (state.powerConfig && !prev.powerConfig) {
+      newEvents.push({ at: now, kind: 'power', text: 'Power config' });
+    }
+    if (state.networkConfig && !prev.networkConfig) {
+      newEvents.push({ at: now, kind: 'network', text: 'Network config' });
+    }
+    if (state.displayConfig && !prev.displayConfig) {
+      newEvents.push({ at: now, kind: 'display', text: 'Display config' });
+    }
+    if (state.bluetoothConfig && !prev.bluetoothConfig) {
+      newEvents.push({ at: now, kind: 'bluetooth', text: 'Bluetooth config', detail: state.bluetoothConfig.enabled ? 'enabled' : 'disabled' });
+    }
+    if (state.mqttConfig && !prev.mqttConfig) {
+      newEvents.push({ at: now, kind: 'mqtt', text: 'MQTT config', detail: state.mqttConfig.enabled ? 'enabled' : 'disabled' });
+    }
+    // Channels arrive one at a time — emit one row per fresh slot.
+    const channels = state.channels ?? [];
+    if (channels.length > prev.channelCount) {
+      for (let i = prev.channelCount; i < channels.length; i++) {
+        const c = channels[i];
+        const name = c.name || (c.role === 1 ? '(primary, default)' : '(unnamed)');
+        newEvents.push({ at: now, kind: 'channel', text: `Channel ${c.index}`, detail: `${name} · ${c.roleName}` });
+      }
+    }
+    // Retries — tag the moment we re-sent wantConfig.
+    const retries = state.sync?.retries ?? 0;
+    if (retries > prev.retries) {
+      newEvents.push({ at: now, kind: 'retry', text: `wantConfig re-sent (retry ${retries})`, detail: 'previous frame likely dropped on USB/BLE' });
+    }
+    // Slow-mode warning — the soft timeout fired but we're still listening.
+    const stalled = state.sync?.failure === 'stall';
+    if (stalled && !prev.stalled) {
+      newEvents.push({ at: now, kind: 'stall', text: 'Sync slow — slow-retry mode', detail: 'transport stays open · radio may still wake up' });
+    }
+    if (newEvents.length > 0) pushTape(newEvents);
+
+    prevStateRef.current = {
+      myNodeNum: state.myInfo?.myNodeNum,
+      firmwareVersion: state.myInfo?.firmwareVersion,
+      hasBluetooth: state.myInfo?.hasBluetooth,
+      loraConfig: !!state.loraConfig,
+      deviceConfig: !!state.deviceConfig,
+      positionConfig: !!state.positionConfig,
+      powerConfig: !!state.powerConfig,
+      networkConfig: !!state.networkConfig,
+      displayConfig: !!state.displayConfig,
+      bluetoothConfig: !!state.bluetoothConfig,
+      mqttConfig: !!state.mqttConfig,
+      channelCount: channels.length,
+      retries,
+      stalled,
+    };
+  }, [state]);
+
+  // Per-connection NodeInfo subscription — pushes one tape row per peer
+  // as it arrives in the nodeDB dump.
+  useEffect(() => {
+    if (!connId) return;
+    return window.mesh.onNode(({ connId: cid, node }) => {
+      if (cid !== connId) return;
+      const hex = node.num.toString(16).padStart(8, '0');
+      const longLabel = node.longName || node.shortName || `!${hex}`;
+      const shortLabel = node.shortName ? ` (${node.shortName})` : '';
+      const hwLabel = node.hwModelName && node.hwModelName !== 'UNSET' ? ` · ${node.hwModelName}` : '';
+      pushTape({ at: Date.now(), kind: 'node', text: `NodeInfo: ${longLabel}${shortLabel}`, detail: `!${hex}${hwLabel}` });
+    });
+  }, [connId]);
+
+  // Auto-scroll to bottom as new rows arrive — sticky if the user is
+  // already at the bottom; leave them alone otherwise (so they can read
+  // history without the tape yanking them down).
+  const tapeRef = useRef<HTMLDivElement | null>(null);
+  const tapeStickyRef = useRef(true);
+  useEffect(() => {
+    const el = tapeRef.current;
+    if (!el || !tapeStickyRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [tape.length]);
+  const onTapeScroll = () => {
+    const el = tapeRef.current;
+    if (!el) return;
+    tapeStickyRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  };
+
   // Heuristic completeness: each item received contributes a chunk; nodes
   // contribute proportional to the count so the bar grows visibly during the
   // long node-DB phase.
@@ -884,16 +1099,50 @@ function SyncProgress({
     },
   ];
 
+  const livenessColor =
+    livenessTone === 'good' ? 'var(--good)'
+    : livenessTone === 'warn' ? 'var(--warn)'
+    : livenessTone === 'bad' ? 'var(--bad)'
+    : 'var(--text-faint)';
+
   return (
     <div className="card sync-progress">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8, gap: 12, flexWrap: 'wrap' }}>
         <h3 style={{ margin: 0, fontSize: 12 }}>SYNCING</h3>
-        <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-faint)' }}>{elapsed}s elapsed</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontFamily: 'var(--mono)', fontSize: 11 }}>
+          <span style={{ color: 'var(--text-faint)' }}>{elapsed}s elapsed</span>
+          <span title="Time since the radio last sent us anything. Long gaps mean a wedged firmware or a dropped wantConfig.">
+            <span style={{ color: 'var(--text-faint)' }}>last frame </span>
+            <span style={{ color: livenessColor, fontWeight: 600 }}>{sinceLastFrameLabel}</span>
+          </span>
+          {retries > 0 && (
+            <span title="Number of times we re-sent wantConfig because the radio went silent. The first attempt may have been dropped on USB / BLE.">
+              <span style={{ color: 'var(--text-faint)' }}>retries </span>
+              <span style={{ color: 'var(--warn)', fontWeight: 600 }}>{retries}</span>
+            </span>
+          )}
+          {connId && (
+            <button
+              className="ghost"
+              onClick={onRetry}
+              disabled={retrying}
+              title="Re-send wantConfig now. Useful when the watchdog hasn't fired yet but the radio's clearly silent."
+              style={{ fontSize: 11, padding: '2px 8px' }}
+            >
+              {retrying ? 'sent…' : '↻ Retry now'}
+            </button>
+          )}
+        </div>
       </div>
       <div className="progress-bar">
         <div className="progress-fill" style={{ width: `${fillPct}%` }} />
         <div className="progress-shimmer" />
       </div>
+      {state.sync?.failure === 'stall' && state.error && (
+        <div className="info-card" style={{ borderLeftColor: 'var(--warn)', marginTop: 10, marginBottom: 4 }}>
+          <p style={{ margin: 0, fontSize: 12.5 }}>{state.error}</p>
+        </div>
+      )}
       <ul className="sync-checklist">
         {items.map((it, i) => (
           <li key={i} className={it.done ? 'done' : 'pending'}>
@@ -903,6 +1152,23 @@ function SyncProgress({
           </li>
         ))}
       </ul>
+
+      <div className="sync-tape-head">
+        <span className="sync-tape-title">Live activity</span>
+        <span className="sync-tape-meta">{tape.length} event{tape.length === 1 ? '' : 's'}</span>
+      </div>
+      <div className="sync-tape" ref={tapeRef} onScroll={onTapeScroll} aria-live="polite">
+        {tape.length === 0 ? (
+          <div className="sync-tape-empty">Waiting for the first FromRadio frame…</div>
+        ) : tape.map((ev, i) => (
+          <div key={i} className={`sync-tape-row sync-tape-${ev.kind}`}>
+            <span className="sync-tape-time">{syncStartedAt ? fmtSinceStart(ev.at, syncStartedAt) : ''}</span>
+            <span className="sync-tape-glyph" style={{ color: tapeKindColor(ev.kind) }}>{tapeKindGlyph(ev.kind)}</span>
+            <span className="sync-tape-text">{ev.text}</span>
+            {ev.detail && <span className="sync-tape-detail">{ev.detail}</span>}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
