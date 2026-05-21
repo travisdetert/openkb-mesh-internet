@@ -6,6 +6,7 @@ import type { TabId } from '../TopNav';
 import { useAntennaOverrides } from '../../hooks/useAntennaOverrides';
 import { useOwnedAntennas } from '../../hooks/useOwnedRosters';
 import { ANTENNA_CATALOG } from '../../lib/antenna-catalog';
+import { ROLE_NAMES } from '../../lib/device-roles';
 
 const STALE_S = 24 * 3600;
 const AGING_S = 3600;
@@ -42,12 +43,6 @@ function snrBars(snr?: number): number {
   if (snr > -15) return 1;
   return 0;
 }
-
-const ROLE_NAMES: Record<number, string> = {
-  0: 'CLIENT', 1: 'CLIENT_MUTE', 2: 'ROUTER', 3: 'ROUTER_CLIENT',
-  4: 'REPEATER', 5: 'TRACKER', 6: 'SENSOR', 7: 'TAK',
-  8: 'CLIENT_HIDDEN', 9: 'LOST_AND_FOUND', 10: 'TAK_TRACKER',
-};
 
 type SortKey =
   | 'smart'

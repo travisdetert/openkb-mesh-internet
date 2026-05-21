@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useActiveConnId, useMeshContext } from '../../hooks/MeshContext';
+import { DEVICE_ROLES } from '../../lib/device-roles';
 
 const REGIONS: Array<{ value: number; label: string; band: string }> = [
   { value: 0, label: 'UNSET',     band: '— pick one —' },
@@ -33,21 +34,6 @@ const PRESETS: Array<{ value: number; label: string; hint: string }> = [
   { value: 6, label: 'ShortFast',    hint: 'SF7/250kHz · faster, short range' },
   { value: 7, label: 'LongModerate', hint: 'SF11/125kHz' },
   { value: 8, label: 'ShortTurbo',   hint: 'SF7/500kHz · fastest LoRa preset' },
-];
-
-const DEVICE_ROLES = [
-  { value: 0, label: 'CLIENT', hint: 'default · normal user node' },
-  { value: 1, label: 'CLIENT_MUTE', hint: 'receive-only · won\'t rebroadcast' },
-  { value: 2, label: 'ROUTER', hint: 'high-uptime relay, optimised for forwarding' },
-  { value: 3, label: 'ROUTER_CLIENT', hint: 'deprecated · use ROUTER' },
-  { value: 4, label: 'REPEATER', hint: 'just rebroadcasts · doesn\'t appear as a user' },
-  { value: 5, label: 'TRACKER', hint: 'low-power GPS beacon mode' },
-  { value: 6, label: 'SENSOR', hint: 'periodic telemetry broadcaster' },
-  { value: 7, label: 'TAK', hint: 'TAK client integration' },
-  { value: 8, label: 'CLIENT_HIDDEN', hint: 'normal node but suppressed from others\' nodeDBs' },
-  { value: 9, label: 'LOST_AND_FOUND', hint: 'shouts location on a fixed channel' },
-  { value: 10, label: 'TAK_TRACKER', hint: 'TAK + tracker' },
-  { value: 11, label: 'ROUTER_LATE', hint: 'router that prefers to defer to other routers' },
 ];
 
 const REBROADCAST_MODES = [

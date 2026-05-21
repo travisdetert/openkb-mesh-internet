@@ -1,12 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useMeshContext } from '../../hooks/MeshContext';
 import type { ConnectionView } from '../../hooks/useMesh';
-
-const ROLE_NAMES: Record<number, string> = {
-  0: 'CLIENT', 1: 'CLIENT_MUTE', 2: 'ROUTER', 3: 'ROUTER_CLIENT',
-  4: 'REPEATER', 5: 'TRACKER', 6: 'SENSOR', 7: 'TAK',
-  8: 'CLIENT_HIDDEN', 9: 'LOST_AND_FOUND', 10: 'TAK_TRACKER', 11: 'ROUTER_LATE',
-};
+import { ROLE_NAMES } from '../../lib/device-roles';
 
 function hex8(n: number): string {
   return '!' + (n >>> 0).toString(16).padStart(8, '0');
