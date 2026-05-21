@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Background: rounded square in the app's dark surface color -->
+  <rect width="1024" height="1024" rx="224" fill="#0f1115"/>
+
+  <!-- Concentric radio waves emanating upward from the source node -->
+  <g fill="none" stroke="#5cc8ff" stroke-linecap="round">
+    <path d="M 332 640 A 180 180 0 0 1 692 640" stroke-width="48" opacity="1.0"/>
+    <path d="M 232 640 A 280 280 0 0 1 792 640" stroke-width="48" opacity="0.65"/>
+    <path d="M 132 640 A 380 380 0 0 1 892 640" stroke-width="48" opacity="0.35"/>
+  </g>
+
+  <!-- Source node at the focal point of the arcs -->
+  <circle cx="512" cy="640" r="84" fill="#66d39a"/>
+
+  <!-- Two small peer nodes with thin links — hint that this is a mesh, not just a single radio -->
+  <g fill="#66d39a" opacity="0.85">
+    <circle cx="232" cy="836" r="32"/>
+    <circle cx="792" cy="836" r="32"/>
+  </g>
+  <g stroke="#66d39a" stroke-width="10" stroke-linecap="round" opacity="0.5">
+    <line x1="512" y1="640" x2="232" y2="836"/>
+    <line x1="512" y1="640" x2="792" y2="836"/>
+  </g>
+</svg>

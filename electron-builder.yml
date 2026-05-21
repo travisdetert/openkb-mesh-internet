@@ -1,0 +1,110 @@
+# electron-builder configuration
+#
+# Run `npm run dist:mac` / `dist:win` / `dist:linux` to build a single
+# platform; `npm run dist` builds for the host platform's defaults.
+# Native modules (better-sqlite3, serialport) are rebuilt for Electron
+# automatically by `electron-builder install-app-deps` (postinstall).
+
+appId: com.openkb.mesh-internet
+productName: openkb mesh internet
+copyright: Copyright © 2026 Travis Detert
+# electron-builder can't infer the runtime Electron version from a caret
+# range in package.json — pin it here to match what's installed in
+# node_modules. Bump alongside the devDependency.
+electronVersion: 28.3.3
+
+directories:
+  output: release
+  buildResources: assets
+
+# Only ship the production-built renderer (dist/), the compiled main
+# process (dist-electron/), and package.json. node_modules under
+# `dependencies` are auto-included by electron-builder; devDependencies
+# (electron, vite, typescript, etc.) are skipped.
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+
+# Native add-ons MUST live outside the asar archive — Electron's native
+# module loader can't dlopen / LoadLibrary a file inside a packed asar.
+# These globs match the .node files plus their loader shims.
+asarUnpack:
+  - node_modules/better-sqlite3/**/*
+  - node_modules/serialport/**/*
+  - node_modules/@serialport/**/*
+  - node_modules/bindings/**/*
+  - node_modules/file-uri-to-path/**/*
+
+# ─── macOS ────────────────────────────────────────────────────────────
+mac:
+  category: public.app-category.developer-tools
+  icon: assets/icon.icns
+  # Build separate DMGs per architecture rather than one universal binary
+  # — better-sqlite3 / serialport prebuilds only cover the host arch on
+  # a clean install, and electron-builder's "universal" stitching often
+  # mis-merges native modules. Run with `--arch arm64` (default on Apple
+  # Silicon) or `--arch x64` to target a specific arch.
+  target:
+    - target: dmg
+    - target: zip
+  # Unsigned: macOS users will see Gatekeeper warning. Right-click → Open
+  # the first time to bypass. To enable signing later, set CSC_LINK +
+  # CSC_KEY_PASSWORD env vars and remove the `identity: null` line.
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  # Permission strings shown in the OS prompt when the app requests mic /
+  # bluetooth access. The mic prompt is triggered by the voice-message
+  # feature; the bluetooth prompt fires on the first BLE scan.
+  extendInfo:
+    NSMicrophoneUsageDescription: >-
+      openkb mesh internet records short voice messages over your local
+      mesh when you tap the microphone button.
+    NSBluetoothAlwaysUsageDescription: >-
+      openkb mesh internet pairs with Meshtastic radios over Bluetooth
+      Low Energy as an alternative to USB.
+
+dmg:
+  title: ${productName} ${version}
+  # Side-by-side icons in the mount window: app on the left, drag-to-
+  # /Applications shortcut on the right.
+  contents:
+    - x: 130
+      y: 220
+      type: file
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+# ─── Windows ──────────────────────────────────────────────────────────
+# Unsigned: users will hit SmartScreen ("Unknown publisher"). Click "More
+# info → Run anyway" to bypass. EV code-signing cert removes this prompt
+# entirely once you wire up CSC_LINK / CSC_KEY_PASSWORD.
+win:
+  icon: assets/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
+  shortcutName: openkb mesh
+
+# ─── Linux ────────────────────────────────────────────────────────────
+linux:
+  icon: assets/icon.png
+  category: Network
+  synopsis: Meshtastic console — USB / BLE, live mesh map, learn-by-doing
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
