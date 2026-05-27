@@ -67,11 +67,22 @@ export function App() {
   // Once a connection becomes ready, we'll restore the last visited tab
   // (saved in localStorage on every change) provided the user is still on Home.
   const [tab, setTab] = useState<TabId>('home');
+  const [connectAddMode, setConnectAddMode] = useState(false);
   const [chatTarget, setChatTarget] = useState<ChatTarget | null>(null);
   const mesh = useMesh();
   // Auto-show the onboarding tour for first-time users. Manual trigger lives
   // on the Home page so users can revisit any time.
   const [showOnboarding, setShowOnboarding] = useState(() => !hasCompletedOnboarding());
+
+  const navigateTo = (id: string) => {
+    if (id === 'connect-add') {
+      setConnectAddMode(true);
+      setTab('connect');
+    } else {
+      if (id !== 'connect') setConnectAddMode(false);
+      setTab(id as TabId);
+    }
+  };
 
   // Persist tab changes so we can restore them once a radio reconnects.
   useEffect(() => {
@@ -276,7 +287,7 @@ export function App() {
     <div className="app">
       <Sidebar
         active={tab}
-        onSelect={setTab}
+        onSelect={navigateTo}
         state={mesh.state}
         myNode={myNode}
         badges={sidebarBadges}
@@ -326,7 +337,9 @@ export function App() {
           readyAt={mesh.readyAt}
           lastPacketAt={mesh.lastPacketAt}
           packetsLast60s={mesh.packetsLast60s}
-          go={setTab}
+          go={navigateTo}
+          initialAdding={connectAddMode}
+          onAddingChange={setConnectAddMode}
         />
       )}
       {tab === 'nodes' && <NodesPanel nodes={mesh.nodes} state={mesh.state} onMessageNode={openDm} go={setTab} />}

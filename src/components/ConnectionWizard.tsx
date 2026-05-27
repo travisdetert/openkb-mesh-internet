@@ -3,7 +3,7 @@ import { useMeshContext } from '../hooks/MeshContext';
 import { SettingsPanel } from './panels/SettingsPanel';
 import { ChannelsPanel } from './panels/ChannelsPanel';
 import { MqttPanel } from './panels/MqttPanel';
-import { BleScanModal } from './BleScanModal';
+import { useBleScan, looksMeshtastic } from './BleScanModal';
 import type { TabId } from './TopNav';
 import { ROLE_NAMES } from '../lib/device-roles';
 
@@ -38,7 +38,11 @@ interface Props {
   lastPacketAt: number | null;
   packetsLast60s: number;
   /** Jump to another top-level panel — used by the "configure this radio" links. */
-  go: (id: TabId) => void;
+  go: (id: string) => void;
+  /** When true, open directly in "add another radio" mode. */
+  initialAdding?: boolean;
+  /** Notify parent when adding mode changes so it can clear the flag. */
+  onAddingChange?: (v: boolean) => void;
 }
 
 type StageKey = 'discover' | 'open' | 'configure' | 'sync' | 'ready';
@@ -81,6 +85,8 @@ export function ConnectionWizard({
   lastPacketAt,
   packetsLast60s,
   go,
+  initialAdding,
+  onAddingChange,
 }: Props) {
   const { connections, activeConnId, setActiveConnId, pendingReboots, markRebootStarted } = useMeshContext();
   const [ports, setPorts] = useState<PortInfo[]>([]);
@@ -90,11 +96,15 @@ export function ConnectionWizard({
   const [bleStatus, setBleStatus] = useState<string>('');
   const [attempted, setAttempted] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [adding, setAdding] = useState(false);
+  const [adding, setAddingRaw] = useState(initialAdding ?? false);
+  const setAdding = (v: boolean) => { setAddingRaw(v); onAddingChange?.(v); };
+  useEffect(() => { if (initialAdding) setAddingRaw(true); }, [initialAdding]);
   // Inline admin section — when set, the corresponding panel renders
   // beneath the Configure toolbar instead of navigating away. Keeps the
   // user grounded in the device-admin context.
   const [adminSection, setAdminSection] = useState<'settings' | 'channels' | 'mqtt' | null>(null);
+  const bleScan = useBleScan();
+
   const [autoConnect, setAutoConnectLocal] = useState<boolean>(() => {
     try { const v = localStorage.getItem('openkb.autoConnect.v1'); return v === null ? true : v === '1'; } catch { return true; }
   });
@@ -209,9 +219,7 @@ export function ConnectionWizard({
 
   return (
     <div className="page">
-      {/* Renders itself whenever a BLE scan is active — driven by main's
-          scan-update events, not local state. */}
-      <BleScanModal />
+      {/* BleScanModal renders inline below the BLE button */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
         <h1 className="page-title">
           {adding ? 'Add another radio'
@@ -374,65 +382,70 @@ export function ConnectionWizard({
         </div>
       )}
 
-      {/* Port picker — shown when not connected at all, or when explicitly adding another radio */}
+      {/* Device picker — shown when not connected at all, or when explicitly adding another radio */}
       {(!isConnected || adding) ? (
         <div className="card">
-          <h2 style={{ marginTop: 0 }}>
-            {adding && connections.length > 0 ? 'Pick a port for an additional radio' : 'Pick a port'}
-          </h2>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-            <select className="text" value={selected} onChange={(e) => setSelected(e.target.value)} style={{ flex: 1 }}>
-              {availablePorts.length === 0 && (
-                <option value="">{ports.length === 0 ? 'No serial ports found' : 'No additional ports available'}</option>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <h2 style={{ margin: 0 }}>Available devices</h2>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button className="ghost" onClick={refresh} style={{ padding: '4px 10px', fontSize: 12 }}>Rescan USB</button>
+              <button className="ghost" onClick={connectBluetooth} disabled={busy || bleScan.active} style={{ padding: '4px 10px', fontSize: 12 }}>
+                {bleScan.active ? `Scanning BLE… ${Math.floor(bleScan.elapsedMs / 1000)}s` : 'Scan Bluetooth'}
+              </button>
+              {adding && (
+                <button className="ghost" onClick={() => { setAdding(false); setErr(''); }} style={{ padding: '4px 10px', fontSize: 12 }}>Cancel</button>
               )}
-              {availablePorts.map((p) => (
-                <option key={p.path} value={p.path}>
-                  {confidenceBadge(p.confidence)} {p.path} — {p.description ?? p.manufacturer ?? 'unknown'}
-                </option>
+            </div>
+          </div>
+
+          <div className="device-list">
+            {availablePorts.map((p) => (
+              <button
+                key={p.path}
+                className={'device-list-row' + (selected === p.path ? ' active' : '')}
+                onClick={async () => { setSelected(p.path); setBusy(true); setErr(''); try { const id = await window.mesh.connect(p.path); setActiveConnId(id); setAdding(false); setSelected(''); } catch (e: any) { setErr(e?.message ?? String(e)); } finally { setBusy(false); } }}
+                disabled={busy}
+              >
+                <span className="device-list-icon">USB</span>
+                <span className="device-list-info">
+                  <span className="device-list-name">{p.description ?? p.manufacturer ?? p.path}</span>
+                  <span className="device-list-sub">{p.path}{p.confidence === 'confirmed' ? ' · confirmed Meshtastic' : p.confidence === 'likely' ? ' · likely Meshtastic' : ''}</span>
+                </span>
+                {p.confidence === 'confirmed' && <span className="ble-scan-pill good">confirmed</span>}
+              </button>
+            ))}
+
+            {bleScan.devices
+              .filter((d) => !d.alreadyOnUsb)
+              .sort((a, b) => {
+                const am = looksMeshtastic(a.deviceName) ? 0 : 1;
+                const bm = looksMeshtastic(b.deviceName) ? 0 : 1;
+                return am - bm;
+              })
+              .map((d) => (
+                <button
+                  key={d.deviceId}
+                  className="device-list-row"
+                  onClick={() => window.mesh.bleScanPick(d.deviceId)}
+                  disabled={busy}
+                >
+                  <span className="device-list-icon">BLE</span>
+                  <span className="device-list-info">
+                    <span className="device-list-name">{d.deviceName || '(unnamed)'}</span>
+                    <span className="device-list-sub">{d.deviceId.slice(0, 20)}{d.deviceId.length > 20 ? '…' : ''}</span>
+                  </span>
+                  {looksMeshtastic(d.deviceName) && <span className="ble-scan-pill good">Meshtastic</span>}
+                </button>
               ))}
-            </select>
-            <button className="ghost" onClick={refresh}>Rescan</button>
-            <button className="primary" disabled={busy || !selected} onClick={connect}>
-              {busy ? 'Connecting…' : 'Connect'}
-            </button>
-            {adding && (
-              <button className="ghost" onClick={() => { setAdding(false); setErr(''); }}>Cancel</button>
+
+            {availablePorts.length === 0 && bleScan.devices.length === 0 && (
+              <div className="device-list-empty">
+                {bleScan.active
+                  ? 'Scanning for Bluetooth devices…'
+                  : 'No devices found. Plug in a USB radio or click Scan Bluetooth.'}
+              </div>
             )}
           </div>
-          <div className="ble-pair-row">
-            <span className="ble-pair-sep">— or —</span>
-            <button
-              className="ble-pair-btn"
-              disabled={busy}
-              onClick={connectBluetooth}
-              title="Pair with a Meshtastic radio over Bluetooth LE. The radio must have BLE enabled and not already be paired with another client (e.g. the official phone app)."
-            >
-              <span className="ble-pair-icon" aria-hidden="true">📶</span>
-              <span className="ble-pair-text">
-                <span className="ble-pair-label">Connect via Bluetooth</span>
-                <span className="ble-pair-sub">Live scan · pick from a list of nearby BLE radios</span>
-              </span>
-            </button>
-          </div>
-          {availablePorts.length > 0 && (
-            <p style={{ margin: '0 0 0 0', color: 'var(--text-faint)', fontSize: 11.5 }}>
-              ✓ confirmed Meshtastic board · ◯ likely (USB-serial chip family) · · possibly any serial port. The protobuf handshake confirms the rest.
-              {usedPorts.size > 0 && ` · ${usedPorts.size} port${usedPorts.size === 1 ? '' : 's'} already in use, hidden.`}
-            </p>
-          )}
-          {ports.length === 0 && (
-            <div className="info-card" style={{ borderLeftColor: 'var(--warn)', marginTop: 8 }}>
-              <p style={{ margin: '0 0 4px' }}><strong>No serial ports detected.</strong></p>
-              <p style={{ margin: 0, fontSize: 12 }}>Make sure your node is plugged in with a <em>data</em> cable, not charge-only — that's the most common cause. On macOS, look for <code>/dev/cu.usbmodem*</code> or <code>/dev/cu.usbserial*</code>. ESP32-S3 native USB may take a couple of seconds to enumerate after plugging in.</p>
-            </div>
-          )}
-          {ports.length > 0 && availablePorts.length === 0 && (
-            <div className="info-card" style={{ marginTop: 8 }}>
-              <p style={{ margin: 0, fontSize: 12 }}>
-                All detected ports are already connected to a radio. Plug in another USB device and click <em>Rescan</em>.
-              </p>
-            </div>
-          )}
           {bleStatus && (
             <div
               style={{

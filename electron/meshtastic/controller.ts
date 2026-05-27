@@ -930,6 +930,15 @@ export class MeshtasticController extends EventEmitter {
     // to empty defaults). For identity fields, only accept the new value
     // when it actually carries content — otherwise keep what we had.
     const hwModelEffective = info.hwModel || existing?.hwModel || 0;
+    // Precision-aware position merge: the radio's nodeDB often stores
+    // positions with precisionBits applied (coarsened for privacy). If we
+    // already have a more precise position for this node, keep it.
+    const incomingPrecision = (info as any).posPrecisionBits ?? 32;
+    const existingPrecision = (existing as any)?.posPrecisionBits ?? 32;
+    const hasExistingPos = existing?.lat !== undefined && existing?.lon !== undefined;
+    const hasIncomingPos = info.lat !== undefined && info.lon !== undefined && (info.lat !== 0 || info.lon !== 0);
+    const positionDowngrade = hasExistingPos && hasIncomingPos && incomingPrecision < existingPrecision;
+
     const merged: NodeRecord = {
       ...(existing ?? {
         firstHeard: now,
@@ -944,6 +953,12 @@ export class MeshtasticController extends EventEmitter {
       hwModel:    hwModelEffective,
       hwModelName: lookupHwModel(hwModelEffective),
     };
+    if (positionDowngrade) {
+      merged.lat = existing!.lat;
+      merged.lon = existing!.lon;
+      merged.altitude = existing!.altitude;
+      (merged as any).posPrecisionBits = existingPrecision;
+    }
     this.nodes.set(info.num, merged);
     this.emit('node', merged);
 
@@ -952,8 +967,8 @@ export class MeshtasticController extends EventEmitter {
       // Persist the merged identity, not the raw incoming info — same reason
       // as the in-memory merge above.
       this.db.upsertNode(info.num, merged.longName, merged.shortName, merged.hwModel, ts);
-      if (info.lat !== undefined && info.lon !== undefined && (info.lat !== 0 || info.lon !== 0)) {
-        this.db.insertPosition(info.num, info.lat, info.lon, info.altitude ?? 0, ts);
+      if (hasIncomingPos && !positionDowngrade) {
+        this.db.insertPosition(info.num, info.lat!, info.lon!, info.altitude ?? 0, ts);
       }
       if (info.batteryLevel !== undefined || info.voltage !== undefined ||
           info.channelUtilization !== undefined || info.airUtilTx !== undefined) {
@@ -1081,7 +1096,10 @@ export class MeshtasticController extends EventEmitter {
 
     if (pkt.position && pkt.from) {
       const existing = this.nodes.get(pkt.from);
-      if (existing) {
+      const pktPrec = pkt.position.precisionBits ?? 32;
+      const existPrec = (existing as any)?.posPrecisionBits ?? 32;
+      const downgrade = existing?.lat !== undefined && pktPrec < existPrec;
+      if (existing && !downgrade) {
         existing.lat = pkt.position.lat;
         existing.lon = pkt.position.lon;
         existing.altitude = pkt.position.altitude;
@@ -1089,7 +1107,7 @@ export class MeshtasticController extends EventEmitter {
         this.nodes.set(pkt.from, existing);
         this.emit('node', existing);
       }
-      if (this.db && (pkt.position.lat !== 0 || pkt.position.lon !== 0)) {
+      if (this.db && !downgrade && (pkt.position.lat !== 0 || pkt.position.lon !== 0)) {
         this.db.insertPosition(pkt.from, pkt.position.lat, pkt.position.lon, pkt.position.altitude ?? 0, now);
       }
     }

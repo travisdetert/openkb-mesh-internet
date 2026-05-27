@@ -8,7 +8,7 @@ interface Badge { text: string; tone?: Tone }
 
 interface Props {
   active: TabId;
-  onSelect: (id: TabId) => void;
+  onSelect: (id: string) => void;
   state: ConnectionState;
   myNode?: NodeRecord;
   badges: Partial<Record<TabId, Badge | undefined>>;
@@ -157,7 +157,7 @@ export function Sidebar({
                   </div>
                 );
               })}
-            <button className="sidebar-conn-add" onClick={() => onSelect('connect')} title="Open the Connect panel to add or manage radios">
+            <button className="sidebar-conn-add" onClick={() => onSelect('connect-add')} title="Open the Connect panel to add or manage radios">
               + Add / manage radios
             </button>
           </>

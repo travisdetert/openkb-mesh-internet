@@ -2784,6 +2784,25 @@ h1.page-title { font-size: 18px; margin: 0 0 4px; }
   flex-shrink: 0;
 }
 
+.convo-stale-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.convo-item.stale .convo-preview { opacity: 0.5; }
+.new-dm-item.stale { opacity: 0.6; }
+
+.stale-warning {
+  font-size: 11px;
+  color: var(--warn);
+  background: rgba(255,180,60,0.08);
+  border: 1px solid rgba(255,180,60,0.25);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+}
+
 .chat-header {
   display: flex;
   justify-content: space-between;
@@ -3181,6 +3200,77 @@ h1.page-title { font-size: 18px; margin: 0 0 4px; }
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
+}
+.ble-scan-inline {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 8px;
+}
+
+.device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+.device-list-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 14px;
+  cursor: pointer;
+  color: var(--text);
+  font-family: inherit;
+  transition: background 0.1s;
+}
+.device-list-row:hover:not(:disabled) { background: var(--bg-elev-2); border-color: var(--accent); }
+.device-list-row:disabled { opacity: 0.5; cursor: default; }
+.device-list-row.active { border-color: var(--accent); background: var(--bg-elev-2); }
+.device-list-icon {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: rgba(92,200,255,0.1);
+  border: 1px solid rgba(92,200,255,0.25);
+  border-radius: 4px;
+  padding: 3px 6px;
+  flex-shrink: 0;
+}
+.device-list-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.device-list-name {
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.device-list-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.device-list-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13px;
 }
 .ble-scan-head {
   display: flex;

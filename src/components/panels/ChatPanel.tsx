@@ -4,7 +4,7 @@ import { useActiveConnId, useMeshContext } from '../../hooks/MeshContext';
 import { channelHash, channelHashHex, pskFingerprint, pskLabel } from '../../channel-identity';
 import { estimateAirtimeSec, utf8Bytes, SOFT_BYTE_LIMIT, HARD_BYTE_LIMIT } from '../../lib/lora-airtime';
 import { loadCanned, saveCanned, resetCanned } from '../../lib/canned-messages';
-import { chunkText, parseChunk, assembleMessages, MAX_CHUNKS } from '../../lib/message-codec';
+import { chunkText, parseChunk, isChunk, assembleMessages, MAX_CHUNKS } from '../../lib/message-codec';
 import { maybeCompress, maybeDecompress, isCompressed } from '../../lib/text-compress';
 import { encodePayload, decodePayload, type DecodedPayload, type PositionPayload, type WaypointPayload, type ImageStub } from '../../lib/payload-types';
 import { ditherImage, decodeOneBitImage, renderOneBitImage, type DitheredImage } from '../../lib/image-codec';
@@ -45,6 +45,29 @@ interface ConvoItem {
   lastFromMe?: boolean;
   lastSender?: string;
   unread: number;
+  /** DM only: peer node's lastHeard (seconds epoch). */
+  peerLastHeard?: number;
+}
+
+/** Staleness thresholds for node reachability. */
+const STALE_RECENT_SEC = 30 * 60;     // 30 min — probably reachable
+const STALE_WARN_SEC = 2 * 60 * 60;   // 2 h — questionable
+// Anything beyond STALE_WARN_SEC is "stale" — likely unreachable.
+
+function stalenessColor(lastHeardSec: number | undefined): string {
+  if (!lastHeardSec) return 'var(--text-faint)';
+  const age = Math.floor(Date.now() / 1000) - lastHeardSec;
+  if (age < STALE_RECENT_SEC) return 'var(--good)';
+  if (age < STALE_WARN_SEC) return 'var(--warn)';
+  return 'var(--text-faint)';
+}
+
+function stalenessLabel(lastHeardSec: number | undefined): string | null {
+  if (!lastHeardSec) return 'never heard';
+  const age = Math.floor(Date.now() / 1000) - lastHeardSec;
+  if (age < STALE_RECENT_SEC) return null; // recent enough — no label needed
+  if (age < STALE_WARN_SEC) return `last heard ${agoShort(lastHeardSec)}`;
+  return `last heard ${agoShort(lastHeardSec)}`;
 }
 
 function senderColor(num: number): string {
@@ -60,6 +83,26 @@ function relTime(rxSec: number): string {
   if (d < 3600) return `${Math.floor(d / 60)}m`;
   if (d < 86400) return `${Math.floor(d / 3600)}h`;
   return `${Math.floor(d / 86400)}d`;
+}
+
+/** Clean up raw wire text for the conversation-list preview. Chunked,
+ *  compressed, and typed-payload markers should never leak into the sidebar. */
+function previewText(raw: string): string {
+  if (isChunk(raw)) {
+    const parsed = parseChunk(raw);
+    return parsed ? `[message ${parsed.index}/${parsed.total}]` : '[chunked message]';
+  }
+  if (isCompressed(raw)) return '[compressed message]';
+  if (raw.startsWith('\x01') && raw.length > 2 && raw[2] === '|') {
+    const code = raw[1];
+    if (code === 'P') return '[shared location]';
+    if (code === 'W') return '[waypoint]';
+    if (code === 'V') return '[voice message]';
+    if (code === 'I') return '[image]';
+    if (code === 'G') return '[GPX track]';
+    return '[attachment]';
+  }
+  return raw;
 }
 
 function buildConvoList(messages: TextMessage[], nodes: NodeRecord[], state: ConnectionState, lastViewed: Record<string, number>): ConvoItem[] {
@@ -87,6 +130,7 @@ function buildConvoList(messages: TextMessage[], nodes: NodeRecord[], state: Con
       const peer = m.from === myNum ? m.to : m.from;
       key = `dm:${peer}`;
       if (!items.has(key)) {
+        const peerNode = nodes.find((n) => n.num === peer);
         items.set(key, {
           key,
           target: { kind: 'dm', nodeNum: peer },
@@ -94,6 +138,7 @@ function buildConvoList(messages: TextMessage[], nodes: NodeRecord[], state: Con
           sub: 'direct',
           lastTs: 0,
           unread: 0,
+          peerLastHeard: peerNode?.lastHeard,
         });
       }
     }
@@ -101,7 +146,7 @@ function buildConvoList(messages: TextMessage[], nodes: NodeRecord[], state: Con
     if (!it) continue;
     if (m.rxTime >= it.lastTs) {
       it.lastTs = m.rxTime;
-      it.lastText = m.text;
+      it.lastText = previewText(m.text);
       it.lastFromMe = m.from === myNum;
       it.lastSender = m.from === myNum ? 'me' : nameFor(nodes, m.from);
     }
@@ -858,17 +903,21 @@ function NewDmPicker({
         {filtered.length === 0 && (
           <div className="empty" style={{ padding: 10, fontSize: 11 }}>No matching nodes yet.</div>
         )}
-        {filtered.map((n) => (
-          <button
-            key={n.num}
-            className="new-dm-item"
-            onClick={() => onPick(n.num)}
-          >
-            <span className="new-dm-short" style={{ color: senderColor(n.num) }}>{n.shortName || '????'}</span>
-            <span className="new-dm-long">{n.longName || shortHex(n.num)}</span>
-            {n.lastHeard && <span className="new-dm-time">{relTime(n.lastHeard)}</span>}
-          </button>
-        ))}
+        {filtered.map((n) => {
+          const nodeStale = n.lastHeard != null && (Date.now() / 1000 - n.lastHeard) > STALE_WARN_SEC;
+          return (
+            <button
+              key={n.num}
+              className={'new-dm-item' + (nodeStale ? ' stale' : '')}
+              onClick={() => onPick(n.num)}
+            >
+              <span className="new-dm-short" style={{ color: senderColor(n.num), opacity: nodeStale ? 0.5 : 1 }}>{n.shortName || '????'}</span>
+              <span className="new-dm-long" style={{ opacity: nodeStale ? 0.5 : 1 }}>{n.longName || shortHex(n.num)}</span>
+              <span className="convo-stale-dot" style={{ background: stalenessColor(n.lastHeard) }} />
+              {n.lastHeard && <span className="new-dm-time" style={{ color: stalenessColor(n.lastHeard) }}>{relTime(n.lastHeard)}</span>}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -1005,14 +1054,19 @@ function _Conversations({
                 (effective.kind === 'dm' && c.target.kind === 'dm' && effective.nodeNum === c.target.nodeNum)
               );
               const accent = c.target.kind === 'dm' ? senderColor(c.target.nodeNum) : 'var(--text)';
+              const isDm = c.target.kind === 'dm';
+              const staleLabel = isDm ? stalenessLabel(c.peerLastHeard) : null;
+              const staleColor = isDm ? stalenessColor(c.peerLastHeard) : undefined;
+              const isStale = isDm && c.peerLastHeard != null && (Date.now() / 1000 - c.peerLastHeard) > STALE_WARN_SEC;
               return (
                 <button
                   key={c.key}
                   onClick={() => setTarget(c.target)}
-                  className={'convo-item' + (active ? ' active' : '')}
+                  className={'convo-item' + (active ? ' active' : '') + (isStale ? ' stale' : '')}
                 >
                   <div className="convo-row">
-                    <span className="convo-label" style={{ color: active ? 'var(--accent)' : accent }}>
+                    {isDm && <span className="convo-stale-dot" style={{ background: staleColor }} title={staleLabel ?? 'online recently'} />}
+                    <span className="convo-label" style={{ color: active ? 'var(--accent)' : accent, opacity: isStale ? 0.55 : 1 }}>
                       {c.target.kind === 'channel' ? `# ${c.label}` : c.label}
                     </span>
                     {c.lastTs > 0 && <span className="convo-time">{relTime(c.lastTs)}</span>}
@@ -1021,7 +1075,9 @@ function _Conversations({
                   <div className="convo-preview">
                     {c.lastText
                       ? <>{c.lastFromMe ? <span className="convo-prev-sender">me:</span> : <span className="convo-prev-sender">{c.lastSender}:</span>} {c.lastText}</>
-                      : <span style={{ color: 'var(--text-faint)' }}>{c.sub}</span>}
+                      : staleLabel
+                        ? <span style={{ color: staleColor, fontSize: 10.5 }}>{staleLabel}</span>
+                        : <span style={{ color: 'var(--text-faint)' }}>{c.sub}</span>}
                   </div>
                 </button>
               );
@@ -1060,8 +1116,8 @@ function _Conversations({
                   {peerNode.lastHeard && (
                     <>
                       <span>·</span>
-                      <span style={{ color: (Date.now() / 1000 - peerNode.lastHeard) < 60 * 30 ? 'var(--good)' : (Date.now() / 1000 - peerNode.lastHeard) < 60 * 60 * 2 ? 'var(--warn)' : 'var(--text-faint)' }}>
-                        last RX {agoShort(peerNode.lastHeard)}
+                      <span style={{ color: stalenessColor(peerNode.lastHeard) }}>
+                        last heard {agoShort(peerNode.lastHeard)}
                       </span>
                     </>
                   )}
@@ -1167,6 +1223,17 @@ function _Conversations({
             loraConfig={state.loraConfig}
           />
         )}
+
+        {effective?.kind === 'dm' && (() => {
+          const age = peerNode?.lastHeard ? Math.floor(Date.now() / 1000) - peerNode.lastHeard : Infinity;
+          if (age <= STALE_WARN_SEC) return null;
+          const label = peerNode?.lastHeard ? agoShort(peerNode.lastHeard) : 'never';
+          return (
+            <div className="stale-warning">
+              This node was last heard {label} — messages may not be delivered.
+            </div>
+          );
+        })()}
 
         <RichCompose
           composeRef={composeRef}
