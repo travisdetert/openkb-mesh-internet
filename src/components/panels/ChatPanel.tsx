@@ -534,18 +534,29 @@ export function ChatPanel({ messages, nodes, state, target, setTarget }: Props) 
       if ((sameDm || sameChannel) && activeTab === 'conversations') return;
     }
 
+    const senderLabel = nameFor(nodes, newest.from);
+    const isChannel = newest.to === 0xffffffff;
+    const where = isChannel ? `# channel ${newest.channel}` : 'DM';
+    // Strip a leading reply quote for the preview so the user sees the real content.
+    const preview = newest.text.startsWith('> ') ? newest.text.split('\n').slice(1).join(' ') : newest.text;
+    const title = `${senderLabel} · ${where}`;
+    const body = preview.slice(0, 120);
+    // Where a click on the notification should land — the thread it came from.
+    const target: ActivateTarget = isChannel
+      ? { kind: 'channel', index: newest.channel }
+      : { kind: 'dm', nodeNum: newest.from };
+
+    // Prefer the main process: it owns the app icon, fires even while the
+    // window is hidden in the tray, and makes the notification clickable
+    // (focus window + open this thread). Fall back to the browser
+    // Notification API when running outside Electron (e.g. vite dev in a tab).
+    if (window.mesh?.notify) {
+      window.mesh.notify({ title, body, target });
+      return;
+    }
     if (typeof Notification === 'undefined') return;
     const fire = () => {
-      const senderLabel = nameFor(nodes, newest.from);
-      const where = newest.to === 0xffffffff ? `# channel ${newest.channel}` : 'DM';
-      // Strip a leading reply quote for the preview so the user sees the real content.
-      const preview = newest.text.startsWith('> ') ? newest.text.split('\n').slice(1).join(' ') : newest.text;
-      try {
-        new Notification(`${senderLabel} · ${where}`, {
-          body: preview.slice(0, 120),
-          silent: false,
-        });
-      } catch { /* ignore */ }
+      try { new Notification(title, { body, silent: false }); } catch { /* ignore */ }
     };
     if (Notification.permission === 'granted') fire();
     else if (Notification.permission !== 'denied') Notification.requestPermission().then((p) => p === 'granted' && fire());

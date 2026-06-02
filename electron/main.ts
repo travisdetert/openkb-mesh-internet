@@ -4,6 +4,7 @@ import fs from 'fs';
 import { MeshManager } from './meshtastic/manager';
 import { MeshDatabase } from './database';
 import { initCodec } from './meshtastic/protobuf-codec';
+import { SystemIntegration, type ActivateTarget, type NotifyPayload } from './system-integration';
 
 // Tee main process stdout/stderr (and the forwarded renderer console below)
 // to a fixed log file so debugging doesn't require opening DevTools. The
@@ -35,6 +36,17 @@ process.on('uncaughtException', (err) => {
 let mainWindow: BrowserWindow | null = null;
 let manager: MeshManager;
 let db: MeshDatabase;
+// OS-shell integration: menu-bar/tray icon, dock/taskbar unread badge, and
+// native notifications. A notification/tray click focuses the window and asks
+// the renderer to open the relevant chat thread.
+const sys = new SystemIntegration(
+  () => mainWindow,
+  (target: ActivateTarget) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('app:activateConversation', target);
+    }
+  },
+);
 
 // Active BLE chooser. Chromium's select-bluetooth-device event fires
 // repeatedly during a scan with a growing deviceList; we cache the
@@ -90,6 +102,19 @@ function createWindow() {
       app.focus({ steal: true });
     }
   });
+
+  // Close-to-tray: the app keeps running in the menu bar / system tray so it
+  // can stay connected and keep firing notifications while "closed". A real
+  // quit (tray Quit, Cmd/Ctrl-Q → before-quit) sets sys.beginQuit() first.
+  mainWindow.on('close', (e) => {
+    if (sys.getCloseToTray() && !sys.isQuitting()) {
+      e.preventDefault();
+      mainWindow?.hide();
+    }
+    // Otherwise the close proceeds → window-all-closed → app.quit().
+  });
+  // Clear the taskbar/dock attention flash once the user focuses the window.
+  mainWindow.on('focus', () => mainWindow?.flashFrame(false));
 
   // Forward renderer console messages to the main process stdout so we can
   // tail /tmp/electron.log and see [voice], [main], and serial-write lines
@@ -190,6 +215,16 @@ app.whenReady().then(async () => {
   }
 
   createWindow();
+  sys.init();
+
+  // Keep the tray tooltip/menu in sync with how many radios are connected.
+  const updateConnStatus = () => {
+    const conns = manager.listConnections();
+    const ready = conns.filter((c) => c.state.status === 'ready').length;
+    if (conns.length === 0) sys.setConnectionStatus('No device connected');
+    else if (ready === conns.length) sys.setConnectionStatus(`${ready} device${ready === 1 ? '' : 's'} connected`);
+    else sys.setConnectionStatus(`${ready}/${conns.length} device${conns.length === 1 ? '' : 's'} ready`);
+  };
 
   const broadcast = (channel: string, payload: unknown) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -198,7 +233,7 @@ app.whenReady().then(async () => {
   };
 
   // Forward every per-connection event with the connId stamped on it.
-  manager.on('state', (p) => broadcast('mesh:state', p));
+  manager.on('state', (p) => { broadcast('mesh:state', p); updateConnStatus(); });
   manager.on('node', (p) => broadcast('mesh:node', p));
   manager.on('message', (p) => broadcast('mesh:message', p));
   manager.on('message-status', (p) => broadcast('mesh:messageStatus', p));
@@ -207,8 +242,8 @@ app.whenReady().then(async () => {
   manager.on('traceroute-sent', (p) => broadcast('mesh:tracerouteSent', p));
   manager.on('traceroute-response', (p) => broadcast('mesh:tracerouteResponse', p));
   manager.on('trace-update', (p) => broadcast('mesh:traceUpdate', p));
-  manager.on('connection-added', (p) => broadcast('mesh:connectionAdded', p));
-  manager.on('connection-removed', (p) => broadcast('mesh:connectionRemoved', p));
+  manager.on('connection-added', (p) => { broadcast('mesh:connectionAdded', p); updateConnStatus(); });
+  manager.on('connection-removed', (p) => { broadcast('mesh:connectionRemoved', p); updateConnStatus(); });
   manager.on('serial-raw', (p) => broadcast('mesh:serialRaw', p));
   manager.on('serial-event', (p) => broadcast('mesh:serialEvent', p));
   manager.on('messages-cleared', (p) => broadcast('mesh:messagesCleared', p));
@@ -219,6 +254,15 @@ app.whenReady().then(async () => {
   manager.on('ble-disconnect-request', (p) => broadcast('mesh:bleDisconnectRequest', p));
 
   // ── IPC handlers ──────────────────────────────────────────────────
+  // OS-shell: renderer pushes its unread count and fires notifications
+  // through the main process so they carry the app icon and a clickable
+  // target even when the window is hidden in the tray.
+  ipcMain.on('app:setUnread', (_e, count: number) => sys.setUnread(count));
+  ipcMain.on('app:notify', (_e, payload: NotifyPayload) => sys.notify(payload));
+  // Renderer owns this preference (localStorage); it pushes the value here on
+  // mount and on every toggle so the close handler above sees the live choice.
+  ipcMain.on('app:setCloseToTray', (_e, enabled: boolean) => sys.setCloseToTray(enabled));
+
   ipcMain.handle('mesh:listPorts', () => MeshManager.listPorts());
   ipcMain.handle('mesh:listConnections', () => manager.listConnections());
   ipcMain.handle('mesh:connect', (_e, portPath: string) => manager.connect(portPath));
@@ -381,6 +425,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('mesh:links', () => db.getLinks());
 });
 
+// Cmd/Ctrl-Q, the app menu, or app.quit() — let the window actually close
+// instead of the close-to-tray handler swallowing it.
+app.on('before-quit', () => sys.beginQuit());
+
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  // With close-to-tray ON the window is hidden, not destroyed, so this won't
+  // fire. It only fires when the user has disabled close-to-tray (or chose
+  // Quit) and the window genuinely closed — in which case quit the app.
+  app.quit();
 });

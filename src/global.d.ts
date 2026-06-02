@@ -349,7 +349,22 @@ declare global {
     portPath?: string;
   }
 
+  type ActivateTarget =
+    | { kind: 'channel'; index: number }
+    | { kind: 'dm'; nodeNum: number };
+
   interface MeshAPI {
+    // ── OS-shell integration ──────────────────────────────────────────
+    /** Push the unread-message count into the dock/taskbar badge + tray. */
+    setUnread: (count: number) => void;
+    /** Fire a native notification via the main process (app icon + clickable
+     *  even when the window is hidden in the tray). */
+    notify: (payload: { title: string; body: string; target?: ActivateTarget }) => void;
+    /** When true, closing the window hides to the tray instead of quitting. */
+    setCloseToTray: (enabled: boolean) => void;
+    /** A notification/tray click wants this chat thread opened. */
+    onActivateConversation: (cb: (target: ActivateTarget) => void) => () => void;
+
     listPorts: () => Promise<PortInfo[]>;
     listConnections: () => Promise<ConnectionSummary[]>;
     /** Returns the newly-opened connection's id. */

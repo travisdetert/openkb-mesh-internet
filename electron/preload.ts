@@ -1,6 +1,28 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+type ActivateTarget =
+  | { kind: 'channel'; index: number }
+  | { kind: 'dm'; nodeNum: number };
+
 const api = {
+  // ── OS-shell integration ────────────────────────────────────────────
+  // Push the unread-message count into the dock/taskbar badge + tray.
+  setUnread: (count: number) => ipcRenderer.send('app:setUnread', count),
+  // Fire a native notification from the main process (gets the app icon and
+  // works while the window is hidden in the tray). `target` lets a click jump
+  // straight to the relevant chat thread.
+  notify: (payload: { title: string; body: string; target?: ActivateTarget }) =>
+    ipcRenderer.send('app:notify', payload),
+  // When true, closing the window hides the app to the tray instead of
+  // quitting. Renderer holds the preference and pushes it here.
+  setCloseToTray: (enabled: boolean) => ipcRenderer.send('app:setCloseToTray', enabled),
+  // Main → renderer: a notification or tray click wants this thread opened.
+  onActivateConversation: (cb: (target: ActivateTarget) => void) => {
+    const fn = (_e: unknown, target: ActivateTarget) => cb(target);
+    ipcRenderer.on('app:activateConversation', fn);
+    return () => ipcRenderer.removeListener('app:activateConversation', fn);
+  },
+
   // ── connections ─────────────────────────────────────────────────────
   listPorts: () => ipcRenderer.invoke('mesh:listPorts'),
   listConnections: () => ipcRenderer.invoke('mesh:listConnections'),

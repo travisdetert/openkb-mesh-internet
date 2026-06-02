@@ -26,6 +26,13 @@ files:
   - dist-electron/**/*
   - package.json
 
+# The tray / menu-bar icon is loaded at runtime (system-integration.ts), so
+# ship the PNG into the app's resources dir. `process.resourcesPath/assets/`
+# is where the runtime looks in a packaged build.
+extraResources:
+  - from: assets/icon.png
+    to: assets/icon.png
+
 # Native add-ons MUST live outside the asar archive — Electron's native
 # module loader can't dlopen / LoadLibrary a file inside a packed asar.
 # These globs match the .node files plus their loader shims.

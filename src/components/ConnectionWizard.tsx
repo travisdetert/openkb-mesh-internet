@@ -113,6 +113,17 @@ export function ConnectionWizard({
     void window.mesh.setAutoConnect(autoConnect);
     try { localStorage.setItem('openkb.autoConnect.v1', autoConnect ? '1' : '0'); } catch { /* ignore */ }
   }, [autoConnect]);
+
+  // Close-to-tray: when on, closing the window keeps the app alive in the
+  // menu bar / system tray (staying connected + able to notify). Same
+  // localStorage-source-of-truth pattern as auto-connect.
+  const [closeToTray, setCloseToTrayLocal] = useState<boolean>(() => {
+    try { const v = localStorage.getItem('openkb.closeToTray.v1'); return v === null ? true : v === '1'; } catch { return true; }
+  });
+  useEffect(() => {
+    window.mesh.setCloseToTray?.(closeToTray);
+    try { localStorage.setItem('openkb.closeToTray.v1', closeToTray ? '1' : '0'); } catch { /* ignore */ }
+  }, [closeToTray]);
   // Ports already in use by an active connection — hide from picker.
   const usedPorts = new Set(connections.map((c) => c.portPath).filter(Boolean) as string[]);
   const availablePorts = ports.filter((p) => !usedPorts.has(p.path));
@@ -229,6 +240,10 @@ export function ConnectionWizard({
         <label className={'autoconnect-toggle' + (autoConnect ? ' on' : '')} title="When enabled, any USB device the app recognises as a Meshtastic board (confirmed VID/PID match) is opened automatically. Generic USB-serial devices are never auto-connected.">
           <input type="checkbox" checked={autoConnect} onChange={(e) => setAutoConnectLocal(e.target.checked)} />
           <span>Auto-connect to recognised radios</span>
+        </label>
+        <label className={'autoconnect-toggle' + (closeToTray ? ' on' : '')} title="When enabled, closing the window keeps the app running in the menu bar / system tray so it stays connected and can still notify you of new messages. Quit fully from the tray icon's menu. When disabled, closing the window quits the app.">
+          <input type="checkbox" checked={closeToTray} onChange={(e) => setCloseToTrayLocal(e.target.checked)} />
+          <span>Keep running in tray when closed</span>
         </label>
       </div>
 
@@ -427,7 +442,11 @@ export function ConnectionWizard({
                   key={d.deviceId}
                   className="device-list-row"
                   onClick={() => window.mesh.bleScanPick(d.deviceId)}
-                  disabled={busy}
+                  // Stay clickable during the scan even though `busy` is true —
+                  // picking a device is exactly what resolves the scan. (The
+                  // whole scan runs inside connectBluetooth(), which holds
+                  // busy=true the entire time.)
+                  disabled={!bleScan.active}
                 >
                   <span className="device-list-icon">BLE</span>
                   <span className="device-list-info">
@@ -446,7 +465,7 @@ export function ConnectionWizard({
               </div>
             )}
           </div>
-          {bleStatus && (
+          {bleStatus && !bleScan.active && (
             <div
               style={{
                 marginTop: 8,

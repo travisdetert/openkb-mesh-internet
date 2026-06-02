@@ -14,6 +14,7 @@ function loadLastTab(): TabId | null {
   } catch { return null; }
 }
 import { Sidebar } from './components/Sidebar';
+import { BleScanBanner } from './components/BleScanBanner';
 import { HomePage } from './components/HomePage';
 import { ConnectionWizard } from './components/ConnectionWizard';
 import { SettingsPanel } from './components/panels/SettingsPanel';
@@ -204,7 +205,18 @@ export function App() {
   useEffect(() => {
     if (unreadMessages > prevUnreadRef.current) setChatPulseKey((k) => k + 1);
     prevUnreadRef.current = unreadMessages;
+    // Mirror the unread count into the OS dock/taskbar badge + tray tooltip.
+    window.mesh?.setUnread?.(unreadMessages);
   }, [unreadMessages]);
+
+  // A notification or tray click (handled in the main process) asks us to
+  // open a specific thread — jump to Chat and select it.
+  useEffect(() => {
+    return window.mesh?.onActivateConversation?.((target) => {
+      setChatTarget(target);
+      setTab('chat');
+    });
+  }, []);
   const pendingTraces = useMemo(() => mesh.traceroutes.filter((t) => !t.response).length, [mesh.traceroutes]);
 
   // Active connection view, needed by the troubleshoot summaries that look at
@@ -285,6 +297,8 @@ export function App() {
       />
     )}
     <div className="app">
+      <BleScanBanner />
+      <div className="app-body">
       <Sidebar
         active={tab}
         onSelect={navigateTo}
@@ -382,6 +396,7 @@ export function App() {
       {tab === 'antennas-db' && <AntennaDatabasePanel />}
       {tab === 'concepts' && <ConceptsPanel />}
       </main>
+      </div>
     </div>
     </MeshContext.Provider>
   );
