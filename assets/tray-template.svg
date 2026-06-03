@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- macOS menu-bar TEMPLATE glyph: black shapes on a transparent
+       background. macOS renders template images using only the alpha
+       channel (tinted for light/dark menu bars), so we keep the waves'
+       graduated opacity for a nice fade and drop the tiny peer nodes/links
+       that wouldn't read at 16px. -->
+  <g fill="none" stroke="#000000" stroke-linecap="round">
+    <path d="M 332 600 A 180 180 0 0 1 692 600" stroke-width="70" opacity="1.0"/>
+    <path d="M 222 600 A 290 290 0 0 1 802 600" stroke-width="70" opacity="0.6"/>
+    <path d="M 112 600 A 400 400 0 0 1 912 600" stroke-width="70" opacity="0.3"/>
+  </g>
+  <!-- Source node at the focal point of the arcs -->
+  <circle cx="512" cy="600" r="104" fill="#000000"/>
+</svg>

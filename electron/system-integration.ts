@@ -67,18 +67,30 @@ export class SystemIntegration {
   /** Resolve the bundled app icon and size it for the tray. */
   private trayImage(): Electron.NativeImage {
     // In dev, __dirname is dist-electron/; assets live at the repo root.
-    const candidates = [
-      path.join(__dirname, '../assets/icon.png'),
-      path.join(process.resourcesPath ?? '', 'assets/icon.png'),
-    ];
-    for (const p of candidates) {
-      const img = nativeImage.createFromPath(p);
-      if (!img.isEmpty()) {
-        // 16px is the conventional tray glyph size on macOS/Windows; Linux
-        // scales fine from it too.
-        return img.resize({ width: 16, height: 16 });
+    // Packaged builds copy assets/ into resources/ (electron-builder.yml).
+    const find = (name: string) => {
+      for (const base of [path.join(__dirname, '../assets'), path.join(process.resourcesPath ?? '', 'assets')]) {
+        const img = nativeImage.createFromPath(path.join(base, name));
+        if (!img.isEmpty()) return img;
+      }
+      return null;
+    };
+
+    // macOS menu bar: use the monochrome template glyph so it adapts to the
+    // light/dark menu bar and isn't a dark square. createFromPath auto-loads
+    // the trayTemplate@2x.png sibling for Retina displays.
+    if (process.platform === 'darwin') {
+      const tmpl = find('trayTemplate.png');
+      if (tmpl) {
+        tmpl.setTemplateImage(true);
+        return tmpl;
       }
     }
+
+    // Windows / Linux (or macOS fallback): the colored app icon at 16px.
+    const colored = find('icon.png');
+    if (colored) return colored.resize({ width: 16, height: 16 });
+
     console.warn('[sys] tray icon not found; using empty image');
     return nativeImage.createEmpty();
   }

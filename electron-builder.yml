@@ -32,6 +32,10 @@ files:
 extraResources:
   - from: assets/icon.png
     to: assets/icon.png
+  - from: assets/trayTemplate.png
+    to: assets/trayTemplate.png
+  - from: assets/trayTemplate@2x.png
+    to: assets/trayTemplate@2x.png
 
 # Native add-ons MUST live outside the asar archive — Electron's native
 # module loader can't dlopen / LoadLibrary a file inside a packed asar.
