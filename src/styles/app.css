@@ -78,6 +78,31 @@ body {
 }
 .ble-scan-banner-cancel:hover { background: rgba(92,200,255,0.12); }
 
+/* App-wide reboot banner — same top strip pattern as the scan banner, in the
+ * warn tone since a radio is briefly offline while it restarts. */
+.reboot-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: linear-gradient(to bottom, rgba(240,180,80,0.16), rgba(240,180,80,0.08));
+  border-bottom: 1px solid var(--warn);
+  font-size: 12.5px;
+  font-family: var(--mono);
+  color: var(--text);
+}
+.reboot-banner-text { flex: 1; min-width: 0; }
+.reboot-banner-hint { flex: none; color: var(--text-faint); }
+.reboot-banner-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(240,180,80,0.35);
+  border-top-color: var(--warn);
+  border-radius: 50%;
+  animation: ble-scan-spin 0.8s linear infinite;
+  flex: none;
+}
+
 .sidebar {
   display: flex;
   flex-direction: column;

@@ -15,6 +15,7 @@ function loadLastTab(): TabId | null {
 }
 import { Sidebar } from './components/Sidebar';
 import { BleScanBanner } from './components/BleScanBanner';
+import { RebootBanner } from './components/RebootBanner';
 import { HomePage } from './components/HomePage';
 import { ConnectionWizard } from './components/ConnectionWizard';
 import { SettingsPanel } from './components/panels/SettingsPanel';
@@ -298,6 +299,7 @@ export function App() {
     )}
     <div className="app">
       <BleScanBanner />
+      <RebootBanner reboots={pendingReboots} now={Date.now()} />
       <div className="app-body">
       <Sidebar
         active={tab}
