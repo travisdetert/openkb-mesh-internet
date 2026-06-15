@@ -4,6 +4,7 @@ import { REGIONS } from '../../data/regions';
 import type { TabId } from '../TopNav';
 import { LearningModeBadge, LearningSeeAlso } from './LearningChrome';
 import { useAntennaOverrides } from '../../hooks/useAntennaOverrides';
+import { downloadCsv } from '../../lib/csv';
 
 const REGION_MAP_FROM_RADIO: Record<string, string> = {
   US: 'US', EU_433: 'EU433', EU_868: 'EU868', CN: 'CN', JP: 'JP', ANZ: 'AU',
@@ -625,21 +626,3 @@ function RangeCard({ label, km, hint }: { label: string; km: number; hint: strin
   );
 }
 
-function downloadCsv(rows: Array<Record<string, string>>, suffix: string): void {
-  if (rows.length === 0) return;
-  const headers = Object.keys(rows[0]);
-  const body = rows.map((r) => headers.map((h) => escCsv(r[h])).join(',')).join('\n');
-  const csv = headers.join(',') + '\n' + body + '\n';
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  a.href = url; a.download = `mesh-${suffix}-${stamp}.csv`;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-function escCsv(v: string): string {
-  if (/[",\n\r]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
-  return v;
-}

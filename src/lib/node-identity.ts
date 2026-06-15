@@ -43,3 +43,15 @@ export function nodeLongName(
   const n = nodes.find((x) => x.num === num);
   return n?.longName || n?.shortName || nodeShortHex(num);
 }
+
+/**
+ * Stable per-node accent color. Uses the golden angle (137.508°) so that
+ * sequential node numbers spread maximally around the hue wheel, giving
+ * visually distinct colors for chart lines, chips, and map markers. Was
+ * duplicated across Telemetry, Traceroute, Packet Sniffer, Link Budget,
+ * and RSSI vs Distance panels.
+ */
+export function nodeColor(num: number): string {
+  const hue = ((num >>> 0) * 137.508) % 360;
+  return `hsl(${hue}, 65%, 65%)`;
+}

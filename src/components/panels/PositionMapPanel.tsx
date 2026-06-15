@@ -1,26 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useActiveConnId, useMeshContext } from '../../hooks/MeshContext';
 import { PanelChannelHeader } from '../PanelChannelHeader';
-
-type BasemapStyle = 'dark' | 'voyager' | 'light' | 'satellite';
-
-/**
- * Build the tile URL for a given (style, z, x, y). CARTO basemaps use
- * subdomain rotation (a–d); Esri's World Imagery does not (single host).
- * All four basemaps are free to use with attribution, no API key.
- */
-function tileUrl(style: BasemapStyle, z: number, x: number, y: number, subdomain: string): string {
-  switch (style) {
-    case 'satellite':
-      return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
-    case 'dark':
-      return `https://${subdomain}.basemaps.cartocdn.com/dark_all/${z}/${x}/${y}.png`;
-    case 'voyager':
-      return `https://${subdomain}.basemaps.cartocdn.com/rastertiles/voyager/${z}/${x}/${y}.png`;
-    case 'light':
-      return `https://${subdomain}.basemaps.cartocdn.com/light_all/${z}/${x}/${y}.png`;
-  }
-}
+import { haversineKm } from '../../lib/geo';
+import { downloadCsv } from '../../lib/csv';
+import {
+  type View,
+  SVG_W,
+  SVG_H,
+  clampZoom,
+  lonToMercX,
+  latToMercY,
+  mercYToLat,
+  mercXToLon,
+  projectMeters,
+} from '../map/projection';
+import { type BasemapStyle, MapTiles, Grid } from '../map/MapLayers';
 
 interface Props {
   nodes: NodeRecord[];
@@ -1331,46 +1325,8 @@ function SelectedDetail({
   );
 }
 
-interface View {
-  centerLat: number;
-  centerLon: number;
-  spanLat: number;
-  spanLon: number;
-  spanKm: number;
-  /** Web Mercator zoom level (0 = whole world, 18 = street level) */
-  zoom: number;
-  /** Mercator pixel bounds at the chosen zoom */
-  minMx: number;
-  maxMx: number;
-  minMy: number;
-  maxMy: number;
-}
-
-const SVG_W = 1600;
-const SVG_H = 1000;
-const TILE_SIZE = 256;
-
-function clampZoom(z: number): number {
-  return Math.max(1, Math.min(18, Math.round(z)));
-}
-function lonToMercX(lon: number, z: number): number {
-  return ((lon + 180) / 360) * Math.pow(2, z) * TILE_SIZE;
-}
-function latToMercY(lat: number, z: number): number {
-  const latRad = (lat * Math.PI) / 180;
-  return (
-    (0.5 - Math.log((1 + Math.sin(latRad)) / (1 - Math.sin(latRad))) / (4 * Math.PI)) *
-    Math.pow(2, z) *
-    TILE_SIZE
-  );
-}
-function mercYToLat(my: number, z: number): number {
-  const n = Math.PI - (2 * Math.PI * my) / (TILE_SIZE * Math.pow(2, z));
-  return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
-}
-function mercXToLon(mx: number, z: number): number {
-  return (mx / (TILE_SIZE * Math.pow(2, z))) * 360 - 180;
-}
+// View, SVG_W/SVG_H, clampZoom, and the Mercator projection helpers now live
+// in ../map/projection (imported above) so other map panels can reuse them.
 
 /**
  * Approximate center frequency (MHz) for each Meshtastic region enum
@@ -1503,15 +1459,6 @@ function computeView(nodes: NodeRecord[], me?: NodeRecord): View | null {
   return { centerLat, centerLon, spanLat, spanLon, spanKm, zoom, minMx, maxMx, minMy, maxMy };
 }
 
-function projectMeters(lat: number, lon: number, view: View): { x: number; y: number } {
-  const mx = lonToMercX(lon, view.zoom);
-  const my = latToMercY(lat, view.zoom);
-  return {
-    x: ((mx - view.minMx) / (view.maxMx - view.minMx)) * SVG_W,
-    y: ((my - view.minMy) / (view.maxMy - view.minMy)) * SVG_H,
-  };
-}
-
 /**
  * Coverage heatmap overlay. Samples a grid of cells in screen space, projects
  * each back to lat/lon, computes distance from the user's radio, predicts RSSI
@@ -1575,101 +1522,8 @@ function colorForRssi(rssi: number): string | null {
   return null;                         // below practical sensitivity
 }
 
-function MapTiles({ view, style }: { view: View; style: BasemapStyle }) {
-  // Free, no-API-key basemaps (CARTO + Esri). Attribution lives in the
-  // page-sub. Subdomain rotation parallelises tile fetches across HTTP/2
-  // connections (CARTO accepts a-d; Esri is single-host but harmless).
-  const subdomains = ['a', 'b', 'c', 'd'];
-
-  const tileXMin = Math.floor(view.minMx / TILE_SIZE);
-  const tileXMax = Math.floor(view.maxMx / TILE_SIZE);
-  const tileYMin = Math.floor(view.minMy / TILE_SIZE);
-  const tileYMax = Math.floor(view.maxMy / TILE_SIZE);
-  const worldTiles = Math.pow(2, view.zoom);
-
-  const tiles: React.ReactNode[] = [];
-  for (let tx = tileXMin; tx <= tileXMax; tx++) {
-    for (let ty = tileYMin; ty <= tileYMax; ty++) {
-      if (ty < 0 || ty >= worldTiles) continue;
-      const wrappedTx = ((tx % worldTiles) + worldTiles) % worldTiles;
-      const sub = subdomains[(tx + ty) % subdomains.length];
-      const url = tileUrl(style, view.zoom, wrappedTx, ty, sub);
-      const tileMx = tx * TILE_SIZE;
-      const tileMy = ty * TILE_SIZE;
-      const x = ((tileMx - view.minMx) / (view.maxMx - view.minMx)) * SVG_W;
-      const y = ((tileMy - view.minMy) / (view.maxMy - view.minMy)) * SVG_H;
-      const w = (TILE_SIZE / (view.maxMx - view.minMx)) * SVG_W;
-      const h = (TILE_SIZE / (view.maxMy - view.minMy)) * SVG_H;
-      tiles.push(
-        <image
-          key={`${tx},${ty}`}
-          href={url}
-          x={x}
-          y={y}
-          width={w + 0.5}  /* +0.5 hides hairline gaps from sub-pixel rounding */
-          height={h + 0.5}
-          preserveAspectRatio="none"
-        />
-      );
-    }
-  }
-  return <g>{tiles}</g>;
-}
-
-function Grid({ view, basemap }: { view: View; basemap: BasemapStyle }) {
-  // Both 'dark' and 'satellite' have low-luminance imagery — use a faint
-  // white grid for both, dark grid for the lighter CARTO basemaps.
-  const onDarkBg = basemap === 'dark' || basemap === 'satellite';
-  const gridStroke = onDarkBg ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.08)';
-  const barStroke  = onDarkBg ? 'rgba(255,255,255,0.6)'  : 'rgba(0,0,0,0.6)';
-  const barText    = onDarkBg ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.75)';
-
-  const lines: React.ReactNode[] = [];
-  const stepKm = pickGridStep(view.spanKm);
-  const stepDegLat = stepKm / 111;
-  const stepDegLon = stepKm / (111 * Math.cos((view.centerLat * Math.PI) / 180));
-
-  const minLat = view.centerLat - view.spanLat / 2;
-  const maxLat = view.centerLat + view.spanLat / 2;
-  const minLon = view.centerLon - view.spanLon / 2;
-  const maxLon = view.centerLon + view.spanLon / 2;
-
-  for (let lat = Math.ceil(minLat / stepDegLat) * stepDegLat; lat < maxLat; lat += stepDegLat) {
-    const { y } = projectMeters(lat, view.centerLon, view);
-    lines.push(<line key={`gh-${lat}`} x1={0} x2={1600} y1={y} y2={y} stroke={gridStroke} />);
-  }
-  for (let lon = Math.ceil(minLon / stepDegLon) * stepDegLon; lon < maxLon; lon += stepDegLon) {
-    const { x } = projectMeters(view.centerLat, lon, view);
-    lines.push(<line key={`gv-${lon}`} y1={0} y2={1000} x1={x} x2={x} stroke={gridStroke} />);
-  }
-
-  const barLengthKm = stepKm;
-  const barPx = (barLengthKm / view.spanKm) * 1600 * 0.95;
-  return (
-    <>
-      {lines}
-      <line x1={40} x2={40 + barPx} y1={960} y2={960} stroke={barStroke} strokeWidth={2} />
-      <line x1={40} x2={40} y1={954} y2={966} stroke={barStroke} strokeWidth={2} />
-      <line x1={40 + barPx} x2={40 + barPx} y1={954} y2={966} stroke={barStroke} strokeWidth={2} />
-      <text x={40 + barPx / 2} y={950} fill={barText} fontSize={14} textAnchor="middle"
-            fontFamily="ui-monospace, Menlo, monospace">{barLengthKm} km</text>
-    </>
-  );
-}
-
-function pickGridStep(spanKm: number): number {
-  const candidates = [0.1, 0.25, 0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500];
-  return candidates.find((c) => c * 8 > spanKm) ?? 1000;
-}
-
-function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371;
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
+// MapTiles, Grid, pickGridStep moved to ../map (MapLayers + projection);
+// haversineKm moved to ../../lib/geo. All imported at the top of this file.
 
 function bearingDeg(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const toRad = (d: number) => (d * Math.PI) / 180;
@@ -1687,11 +1541,6 @@ function fsplDb(distanceKm: number, freqMHz: number = 915): number {
 }
 
 function exportCsv(placed: PlacedNode[], me: NodeRecord | undefined, txPower: number): void {
-  const headers = [
-    'short_name', 'long_name', 'node_num', 'hw_model', 'lat', 'lon', 'altitude_m',
-    'precision_bits', 'distance_km', 'bearing_deg', 'hops_away', 'rssi_dbm', 'snr_db',
-    'fspl_db', 'excess_db', 'battery_pct', 'voltage_v', 'last_heard_iso', 'is_stale',
-  ];
   const rows = placed.map((p) => {
     const n = p.node;
     let dist = ''; let bearing = ''; let fspl = ''; let excess = '';
@@ -1703,43 +1552,27 @@ function exportCsv(placed: PlacedNode[], me: NodeRecord | undefined, txPower: nu
       fspl = f.toFixed(2);
       if (n.rssi !== undefined && n.rssi !== 0) excess = (txPower - n.rssi - f).toFixed(2);
     }
-    const fields = [
-      n.shortName || '',
-      n.longName || '',
-      '!' + (n.num >>> 0).toString(16).padStart(8, '0'),
-      n.hwModelName || '',
-      n.lat?.toFixed(6) ?? '',
-      n.lon?.toFixed(6) ?? '',
-      n.altitude?.toString() ?? '',
-      n.posPrecisionBits?.toString() ?? '',
-      dist,
-      bearing,
-      n.hopsAway?.toString() ?? '',
-      n.rssi !== undefined && n.rssi !== 0 ? n.rssi.toString() : '',
-      n.snr !== undefined ? n.snr.toFixed(2) : '',
-      fspl,
-      excess,
-      n.batteryLevel?.toString() ?? '',
-      n.voltage !== undefined ? n.voltage.toFixed(2) : '',
-      n.lastHeard ? new Date(n.lastHeard * 1000).toISOString() : '',
-      p.isStale ? '1' : '0',
-    ];
-    return fields.map(escCsv).join(',');
+    return {
+      short_name: n.shortName || '',
+      long_name: n.longName || '',
+      node_num: '!' + (n.num >>> 0).toString(16).padStart(8, '0'),
+      hw_model: n.hwModelName || '',
+      lat: n.lat?.toFixed(6) ?? '',
+      lon: n.lon?.toFixed(6) ?? '',
+      altitude_m: n.altitude?.toString() ?? '',
+      precision_bits: n.posPrecisionBits?.toString() ?? '',
+      distance_km: dist,
+      bearing_deg: bearing,
+      hops_away: n.hopsAway?.toString() ?? '',
+      rssi_dbm: n.rssi !== undefined && n.rssi !== 0 ? n.rssi.toString() : '',
+      snr_db: n.snr !== undefined ? n.snr.toFixed(2) : '',
+      fspl_db: fspl,
+      excess_db: excess,
+      battery_pct: n.batteryLevel?.toString() ?? '',
+      voltage_v: n.voltage !== undefined ? n.voltage.toFixed(2) : '',
+      last_heard_iso: n.lastHeard ? new Date(n.lastHeard * 1000).toISOString() : '',
+      is_stale: p.isStale ? '1' : '0',
+    };
   });
-  const csv = [headers.join(','), ...rows].join('\n') + '\n';
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  a.href = url;
-  a.download = `mesh-nodes-${stamp}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-function escCsv(v: string): string {
-  if (/[",\n\r]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
-  return v;
+  downloadCsv(rows, 'nodes');
 }

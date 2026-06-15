@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { LORA_PRESETS } from '../../data/lora-presets';
 import type { TabId } from '../TopNav';
 import { LearningModeBadge, LearningSeeAlso } from './LearningChrome';
+import { downloadCsv } from '../../lib/csv';
 
 interface Props {
   nodes: NodeRecord[];
@@ -769,21 +770,3 @@ function Card({ label, value, hint }: { label: string; value: string; hint?: str
   );
 }
 
-function downloadCsv(rows: Array<Record<string, string>>, suffix: string): void {
-  if (rows.length === 0) return;
-  const headers = Object.keys(rows[0]);
-  const body = rows.map((r) => headers.map((h) => escCsv(r[h])).join(',')).join('\n');
-  const csv = headers.join(',') + '\n' + body + '\n';
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  a.href = url; a.download = `mesh-${suffix}-${stamp}.csv`;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-function escCsv(v: string): string {
-  if (/[",\n\r]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
-  return v;
-}
