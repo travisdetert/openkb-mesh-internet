@@ -1,7 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { UtilPoint } from '../../hooks/useMesh';
 import { PanelChannelHeader } from '../PanelChannelHeader';
+import { Subnav } from '../Subnav';
 import { downloadCsv } from '../../lib/csv';
+import {
+  nodeDisplayName as nameFor,
+  nodeShortHex as shortHex,
+  nodeColor as colorForNode,
+} from '../../lib/node-identity';
 
 interface Props {
   nodes: NodeRecord[];
@@ -23,19 +29,8 @@ const SCALE_MS: Record<Scale, number> = {
 
 const CONGESTION_THRESHOLD = 25; // % channel utilization
 
-function shortHex(num: number): string {
-  return '!' + (num >>> 0).toString(16).padStart(8, '0').slice(-4);
-}
-function nameFor(nodes: NodeRecord[], num: number): string {
-  const n = nodes.find((x) => x.num === num);
-  return n?.shortName || shortHex(num);
-}
-
-// Golden-angle hue → stable per-node color across the app.
-function colorForNode(num: number): string {
-  const hue = ((num >>> 0) * 137.508) % 360;
-  return `hsl(${hue}, 65%, 65%)`;
-}
+// nameFor / shortHex / colorForNode are imported from ../../lib/node-identity
+// (aliased above) so node naming + per-node color stay consistent app-wide.
 
 function batteryClass(b: number): string {
   if (b > 50) return 'good';
@@ -79,6 +74,15 @@ export function TelemetryPanel({ nodes, utilHistory, state, onMessageNode }: Pro
     });
   }, [utilHistory]);
 
+  // Low-battery nodes (<20%, excluding unreported 0%), worst first. Surfaced
+  // as a panel-wide banner so it's visible from every sub-tab, not just Battery.
+  const lowBattery = useMemo(
+    () => nodes
+      .filter((n) => n.batteryLevel !== undefined && n.batteryLevel > 0 && n.batteryLevel < 20)
+      .sort((a, b) => (a.batteryLevel ?? 0) - (b.batteryLevel ?? 0)),
+    [nodes],
+  );
+
   return (
     <div className="page">
       <h1 className="page-title">Telemetry</h1>
@@ -88,21 +92,67 @@ export function TelemetryPanel({ nodes, utilHistory, state, onMessageNode }: Pro
 
       <PanelChannelHeader state={state} label="TELEMETRY FROM" />
 
-      <div className="subnav">
-        <button className={'subnav-btn' + (tab === 'chan' ? ' active' : '')} onClick={() => setTab('chan')}>Channel util</button>
-        <button className={'subnav-btn' + (tab === 'battery' ? ' active' : '')} onClick={() => setTab('battery')}>Battery & power</button>
-        <button className={'subnav-btn' + (tab === 'airtime' ? ' active' : '')} onClick={() => setTab('airtime')}>Air time</button>
-        <button className={'subnav-btn' + (tab === 'pernode' ? ' active' : '')} onClick={() => setTab('pernode')}>Per-node</button>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          <ScalePicker scale={scale} setScale={setScale} />
-          {loading && <span style={{ fontSize: 11, color: 'var(--text-faint)', fontFamily: 'var(--mono)' }}>loading…</span>}
-        </div>
-      </div>
+      {lowBattery.length > 0 && (
+        <LowBatteryBanner nodes={lowBattery} onMessageNode={onMessageNode} />
+      )}
+
+      <Subnav
+        items={[
+          { key: 'chan', label: 'Channel util' },
+          { key: 'battery', label: 'Battery & power', count: lowBattery.length },
+          { key: 'airtime', label: 'Air time' },
+          { key: 'pernode', label: 'Per-node' },
+        ]}
+        active={tab}
+        onChange={setTab}
+        trailing={
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+            <ScalePicker scale={scale} setScale={setScale} />
+            {loading && <span style={{ fontSize: 11, color: 'var(--text-faint)', fontFamily: 'var(--mono)' }}>loading…</span>}
+          </div>
+        }
+      />
 
       {tab === 'chan' && <ChannelUtilTab nodes={nodes} history={history} scale={scale} />}
       {tab === 'battery' && <BatteryTab nodes={nodes} history={history} scale={scale} onMessageNode={onMessageNode} />}
       {tab === 'airtime' && <AirtimeTab nodes={nodes} history={history} scale={scale} regionName={state.loraConfig?.regionName} />}
       {tab === 'pernode' && <PerNodeTab nodes={nodes} history={history} scale={scale} state={state} onMessageNode={onMessageNode} />}
+    </div>
+  );
+}
+
+// Panel-wide alert for nodes that have dropped below 20% battery. Each node
+// is a clickable chip that opens a message to it (so you can tell whoever owns
+// it to go swap/charge). Hidden entirely when nothing is low.
+function LowBatteryBanner({ nodes, onMessageNode }: { nodes: NodeRecord[]; onMessageNode?: (n: number) => void }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8,
+      margin: '0 0 12px', padding: '8px 12px', borderRadius: 4,
+      borderLeft: '3px solid #ff6b81', background: 'rgba(255,107,129,0.08)',
+      fontSize: 13,
+    }}>
+      <span style={{ fontWeight: 600 }}>🪫 Low battery</span>
+      <span style={{ color: 'var(--text-dim)' }}>
+        {nodes.length} node{nodes.length === 1 ? '' : 's'} below 20%:
+      </span>
+      {nodes.map((n) => (
+        <button
+          key={n.num}
+          onClick={() => onMessageNode?.(n.num)}
+          title={onMessageNode ? `Message ${nameFor([n], n.num)}` : undefined}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5,
+            border: '1px solid var(--line)', borderRadius: 12,
+            background: 'var(--bg-elev-2)', color: 'var(--text)',
+            padding: '2px 9px', fontSize: 12, fontFamily: 'inherit',
+            cursor: onMessageNode ? 'pointer' : 'default',
+          }}
+        >
+          <span style={{ color: colorForNode(n.num) }}>{n.shortName || shortHex(n.num)}</span>
+          <span style={{ fontFamily: 'var(--mono)', color: '#ff6b81' }}>{n.batteryLevel}%</span>
+        </button>
+      ))}
     </div>
   );
 }
