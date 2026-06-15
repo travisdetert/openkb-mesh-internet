@@ -85,7 +85,14 @@ src/              React renderer — panels, wizard, learn pages
 docs/             Topic write-ups (cross-country hop limits, panels plan)
 ```
 
+## Architecture decisions
+
+Architecturally significant decisions are recorded as [ADRs](docs/adr/) in `docs/adr/` —
+why Electron, why a synchronous native SQLite store, why BLE runs in the renderer, and so on.
+Start at [`docs/adr/README.md`](docs/adr/README.md) for the index.
+
 ## More reading
 
 - [`docs/cross-country-and-hop-limits.md`](docs/cross-country-and-hop-limits.md) — why the mesh can't carry traffic from California to New York
 - [`docs/PANELS_PLAN.md`](docs/PANELS_PLAN.md) — internal quality bar for panels
+- [`docs/adr/`](docs/adr/) — architecture decision records
