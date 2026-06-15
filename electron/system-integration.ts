@@ -49,6 +49,7 @@ export class SystemIntegration {
 
   init(): void {
     if (this.tray) return;
+    this.applyDockIcon();
     try {
       this.tray = new Tray(this.trayImage());
     } catch (e) {
@@ -64,23 +65,39 @@ export class SystemIntegration {
     console.log('[sys] tray ready');
   }
 
+  /**
+   * Resolve a bundled asset by filename. In dev, __dirname is dist-electron/
+   * and assets live at the repo root; packaged builds copy assets/ into
+   * resources/ (see extraResources in electron-builder.yml). Returns null if
+   * the file isn't found (or is empty) in either location.
+   */
+  private findAsset(name: string): Electron.NativeImage | null {
+    for (const base of [path.join(__dirname, '../assets'), path.join(process.resourcesPath ?? '', 'assets')]) {
+      const img = nativeImage.createFromPath(path.join(base, name));
+      if (!img.isEmpty()) return img;
+    }
+    return null;
+  }
+
+  /**
+   * Give the macOS Dock + ⌘-Tab switcher our app icon when running unpackaged
+   * (`npm start`). A packaged .app already carries the icon from its bundle,
+   * but the bare `electron` binary otherwise shows Electron's default diamond.
+   * No-op off macOS — there's no equivalent runtime dock icon to set there.
+   */
+  private applyDockIcon(): void {
+    if (process.platform !== 'darwin' || !app.dock) return;
+    const icon = this.findAsset('icon.png');
+    if (icon) app.dock.setIcon(icon);
+  }
+
   /** Resolve the bundled app icon and size it for the tray. */
   private trayImage(): Electron.NativeImage {
-    // In dev, __dirname is dist-electron/; assets live at the repo root.
-    // Packaged builds copy assets/ into resources/ (electron-builder.yml).
-    const find = (name: string) => {
-      for (const base of [path.join(__dirname, '../assets'), path.join(process.resourcesPath ?? '', 'assets')]) {
-        const img = nativeImage.createFromPath(path.join(base, name));
-        if (!img.isEmpty()) return img;
-      }
-      return null;
-    };
-
     // macOS menu bar: use the monochrome template glyph so it adapts to the
     // light/dark menu bar and isn't a dark square. createFromPath auto-loads
     // the trayTemplate@2x.png sibling for Retina displays.
     if (process.platform === 'darwin') {
-      const tmpl = find('trayTemplate.png');
+      const tmpl = this.findAsset('trayTemplate.png');
       if (tmpl) {
         tmpl.setTemplateImage(true);
         return tmpl;
@@ -88,7 +105,7 @@ export class SystemIntegration {
     }
 
     // Windows / Linux (or macOS fallback): the colored app icon at 16px.
-    const colored = find('icon.png');
+    const colored = this.findAsset('icon.png');
     if (colored) return colored.resize({ width: 16, height: 16 });
 
     console.warn('[sys] tray icon not found; using empty image');

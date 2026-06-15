@@ -9,7 +9,7 @@
     "build": "tsc && vite build && tsc -p tsconfig.electron.json",
     "prestart": "npm run stop --silent 2>/dev/null || true",
     "start": "npm run build && electron dist-electron/main.js",
-    "stop": "pkill -f 'electron dist-electron/main.js' 2>/dev/null; sleep 0.3; echo 'Stopped'",
+    "stop": "pkill -f 'openkb-mesh-internet.*electron dist-electron/main.js' 2>/dev/null; sleep 0.3; echo 'Stopped'",
     "restart": "npm run stop && npm start",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
