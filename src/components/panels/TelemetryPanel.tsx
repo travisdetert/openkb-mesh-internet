@@ -683,6 +683,10 @@ function NodeDetailDrawer({ node, nodeHistory, scale, state, onMessageNode, onCl
 // Multi-series canvas chart (one line per node)
 // ─────────────────────────────────────────────────────────────────────
 
+// Shared geometry so the canvas draw fn and the hover math agree on the plot box.
+const MULTI_W = 1100, MULTI_H = 240;
+const MULTI_PAD = { L: 50, R: 16, T: 16, B: 28 };
+
 function MultiNodeChart({ history, field, nodes, yMax, yLabel, thresholdY, thresholdLabel }: {
   history: TelemetryHistoryRow[];
   field: 'chan_util' | 'air_util_tx';
@@ -693,16 +697,90 @@ function MultiNodeChart({ history, field, nodes, yMax, yLabel, thresholdY, thres
   thresholdLabel?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Hover cursor readout: the time under the pointer + each node's nearest value.
+  const [hover, setHover] = useState<{ left: number; flip: boolean; t: number; rows: { num: number; name: string; value: number }[] } | null>(null);
+
+  const [minT, maxT] = useMemo(() => {
+    if (history.length === 0) return [0, 0];
+    const ts = history.map((r) => r.ts);
+    return [Math.min(...ts), Math.max(...ts)];
+  }, [history]);
+
+  // Per-node sorted samples (positive values only) — drives the hover tooltip.
+  const byNode = useMemo(() => {
+    const m = new Map<number, TelemetryHistoryRow[]>();
+    for (const r of history) {
+      if ((r[field] as number) <= 0) continue;
+      (m.get(r.node_num) ?? m.set(r.node_num, []).get(r.node_num)!).push(r);
+    }
+    for (const rows of m.values()) rows.sort((a, b) => a.ts - b.ts);
+    return m;
+  }, [history, field]);
+
+  const plotW = MULTI_W - MULTI_PAD.L - MULTI_PAD.R;
+  const hoverX = hover ? MULTI_PAD.L + ((hover.t - minT) / Math.max(1, maxT - minT)) * plotW : undefined;
 
   useEffect(() => {
     const c = canvasRef.current;
     if (!c) return;
     const ctx = c.getContext('2d');
     if (!ctx) return;
-    drawMultiSeries(ctx, c.width, c.height, history, field, nodes, yMax, yLabel, thresholdY, thresholdLabel);
-  }, [history, field, yMax, thresholdY]);
+    drawMultiSeries(ctx, c.width, c.height, history, field, nodes, yMax, yLabel, thresholdY, thresholdLabel, hoverX);
+  }, [history, field, yMax, thresholdY, hoverX]);
 
-  return <canvas ref={canvasRef} width={1100} height={240} style={{ width: '100%', height: 240, display: 'block', background: 'var(--bg)', borderRadius: 6 }} />;
+  const onMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const c = canvasRef.current;
+    if (!c || history.length === 0) { return; }
+    const rect = c.getBoundingClientRect();
+    const cssX = e.clientX - rect.left;
+    const canvasX = (cssX / rect.width) * MULTI_W;
+    if (canvasX < MULTI_PAD.L || canvasX > MULTI_PAD.L + plotW) { setHover(null); return; }
+    const t = minT + ((canvasX - MULTI_PAD.L) / plotW) * Math.max(1, maxT - minT);
+    const rows = [...byNode.entries()].map(([num, samples]) => {
+      let best = samples[0], bestD = Infinity;
+      for (const s of samples) { const d = Math.abs(s.ts - t); if (d < bestD) { bestD = d; best = s; } }
+      return { num, name: nameFor(nodes, num), value: best[field] as number };
+    }).sort((a, b) => b.value - a.value);
+    setHover({ left: cssX, flip: canvasX > MULTI_PAD.L + plotW / 2, t, rows });
+  };
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <canvas
+        ref={canvasRef}
+        width={MULTI_W}
+        height={MULTI_H}
+        onMouseMove={onMove}
+        onMouseLeave={() => setHover(null)}
+        style={{ width: '100%', height: MULTI_H, display: 'block', background: 'var(--bg)', borderRadius: 6, cursor: 'crosshair' }}
+      />
+      {hover && hover.rows.length > 0 && (
+        <div
+          style={{
+            position: 'absolute', top: 8, pointerEvents: 'none', zIndex: 2,
+            left: hover.left, transform: `translateX(${hover.flip ? 'calc(-100% - 12px)' : '12px'})`,
+            background: 'var(--bg-elev)', border: '1px solid var(--line)', borderRadius: 6,
+            padding: '6px 9px', fontSize: 11.5, boxShadow: '0 6px 20px rgba(0,0,0,0.4)',
+            maxWidth: 220,
+          }}
+        >
+          <div style={{ color: 'var(--text-faint)', fontFamily: 'var(--mono)', marginBottom: 4 }}>
+            {new Date(hover.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </div>
+          {hover.rows.slice(0, 8).map((r) => (
+            <div key={r.num} style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+              <span style={{ width: 8, height: 8, borderRadius: 2, background: colorForNode(r.num), flex: 'none' }} />
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.name}</span>
+              <span style={{ fontFamily: 'var(--mono)', color: 'var(--text-dim)' }}>
+                {r.value.toFixed(field === 'air_util_tx' ? 2 : 1)}{yLabel}
+              </span>
+            </div>
+          ))}
+          {hover.rows.length > 8 && <div style={{ color: 'var(--text-faint)', marginTop: 2 }}>+{hover.rows.length - 8} more</div>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function drawMultiSeries(
@@ -711,9 +789,10 @@ function drawMultiSeries(
   nodes: NodeRecord[],
   yMax: number, yLabel: string,
   thresholdY?: number, thresholdLabel?: string,
+  hoverX?: number,
 ): void {
   ctx.clearRect(0, 0, w, h);
-  const padL = 50, padR = 16, padT = 16, padB = 28;
+  const { L: padL, R: padR, T: padT, B: padB } = MULTI_PAD;
   const plotW = w - padL - padR;
   const plotH = h - padT - padB;
   if (history.length === 0) return;
@@ -773,6 +852,15 @@ function drawMultiSeries(
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
+  }
+
+  // Hover crosshair (drawn on top of the series)
+  if (hoverX !== undefined && hoverX >= padL && hoverX <= padL + plotW) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(hoverX, padT); ctx.lineTo(hoverX, padT + plotH); ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   // x-axis labels
