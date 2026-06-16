@@ -326,6 +326,28 @@ function BatteryTab({ nodes, history, scale, onMessageNode, onSelectNode }: { no
   const withBattery = useMemo(() => nodes.filter((n) => n.batteryLevel !== undefined).sort((a, b) => (a.batteryLevel ?? 0) - (b.batteryLevel ?? 0)), [nodes]);
   const lowBattery = withBattery.filter((n) => (n.batteryLevel ?? 100) < 20);
 
+  // Per-node voltage change across the window (last − first sample). Surfaces
+  // draining battery nodes and solar nodes whose panel isn't keeping up.
+  const vTrend = useMemo(() => {
+    const byNode = new Map<number, { ts: number; v: number }[]>();
+    for (const r of history) {
+      if (r.voltage > 0) (byNode.get(r.node_num) ?? byNode.set(r.node_num, []).get(r.node_num)!).push({ ts: r.ts, v: r.voltage });
+    }
+    const out = new Map<number, number>();
+    for (const [num, arr] of byNode) {
+      if (arr.length < 2) continue;
+      arr.sort((a, b) => a.ts - b.ts);
+      out.set(num, arr[arr.length - 1].v - arr[0].v);
+    }
+    return out;
+  }, [history]);
+
+  // Nodes that dropped a meaningful amount of voltage over the window, worst first.
+  const declining = useMemo(
+    () => [...vTrend.entries()].filter(([, d]) => d <= -0.15).sort((a, b) => a[1] - b[1]),
+    [vTrend],
+  );
+
   const exportCsv = () => downloadCsv(history.filter((r) => r.battery > 0).map((r) => ({
     ts_iso: new Date(r.ts).toISOString(),
     node: shortHex(r.node_num),
@@ -377,7 +399,10 @@ function BatteryTab({ nodes, history, scale, onMessageNode, onSelectNode }: { no
                         {n.batteryLevel}%
                       </span>
                     </td>
-                    <td>{n.voltage !== undefined ? `${n.voltage.toFixed(2)} V` : '—'}</td>
+                    <td>
+                      {n.voltage !== undefined ? `${n.voltage.toFixed(2)} V` : '—'}
+                      <VoltageTrend delta={vTrend.get(n.num)} />
+                    </td>
                     <td>{n.channelUtilization !== undefined ? `${n.channelUtilization.toFixed(1)}%` : '—'}</td>
                     <td>{n.airUtilTx !== undefined ? `${n.airUtilTx.toFixed(2)}%` : '—'}</td>
                     <td>{onMessageNode && (
@@ -392,6 +417,21 @@ function BatteryTab({ nodes, history, scale, onMessageNode, onSelectNode }: { no
       </div>
 
       <div>
+        {declining.length > 0 && (
+          <div className="info-card" style={{ borderLeftColor: 'var(--warn)' }}>
+            <p style={{ margin: 0, fontWeight: 500 }}>{declining.length} node{declining.length === 1 ? '' : 's'} losing voltage over {scale}</p>
+            <ul style={{ margin: '6px 0 0', paddingLeft: 16, fontSize: 12.5, color: 'var(--text-dim)' }}>
+              {declining.slice(0, 6).map(([num, d]) => (
+                <li key={num}>
+                  <span style={{ color: colorForNode(num) }}>{nameFor(nodes, num)}</span> — {d.toFixed(2)} V
+                </li>
+              ))}
+            </ul>
+            <p style={{ margin: '6px 0 0', fontSize: 12, color: 'var(--text-faint)' }}>
+              Expected for a draining battery node. For a solar node, a sustained daytime drop means the panel isn't keeping up — check placement and shading.
+            </p>
+          </div>
+        )}
         <div className="info-card">
           <p style={{ margin: 0 }}><strong>Why batteries die faster than expected.</strong></p>
           <p style={{ margin: '6px 0 0', fontSize: 12.5 }}>
@@ -406,6 +446,21 @@ function BatteryTab({ nodes, history, scale, onMessageNode, onSelectNode }: { no
         </div>
       </div>
     </div>
+  );
+}
+
+// Inline voltage-trend chip: arrow + signed delta, green rising / amber
+// falling. Hidden for negligible change (< 0.05 V) or too few samples.
+function VoltageTrend({ delta }: { delta?: number }) {
+  if (delta === undefined || Math.abs(delta) < 0.05) return null;
+  const up = delta > 0;
+  return (
+    <span
+      style={{ marginLeft: 6, fontSize: 11, fontFamily: 'var(--mono)', color: up ? 'var(--good)' : 'var(--warn)' }}
+      title={`${up ? 'Rising' : 'Falling'} over the window`}
+    >
+      {up ? '↑' : '↓'}{delta > 0 ? '+' : ''}{delta.toFixed(2)}
+    </span>
   );
 }
 
