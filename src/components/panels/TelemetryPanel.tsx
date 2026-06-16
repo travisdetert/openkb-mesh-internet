@@ -192,20 +192,29 @@ function ScalePicker({ scale, setScale }: { scale: Scale; setScale: (s: Scale) =
 // ─────────────────────────────────────────────────────────────────────
 
 function ChannelUtilTab({ nodes, history, scale, onSelectNode }: { nodes: NodeRecord[]; history: TelemetryHistoryRow[]; scale: Scale; onSelectNode: (n: number) => void }) {
-  // Compute mesh-wide stats over the window.
+  // Compute mesh-wide stats over the window, including the distribution
+  // percentiles so the diagnostic can say where "now" sits historically.
   const stats = useMemo(() => {
-    const chanVals = history.map((r) => r.chan_util).filter((x) => typeof x === 'number' && x > 0);
-    if (chanVals.length === 0) return null;
-    const avg = chanVals.reduce((a, b) => a + b, 0) / chanVals.length;
-    const peak = Math.max(...chanVals);
+    const chanVals = history.map((r) => r.chan_util).filter((x) => typeof x === 'number' && x > 0).sort((a, b) => a - b);
+    const n = chanVals.length;
+    if (n === 0) return null;
+    const avg = chanVals.reduce((a, b) => a + b, 0) / n;
     const overThreshold = chanVals.filter((v) => v >= CONGESTION_THRESHOLD).length;
-    return { avg, peak, overThresholdPct: (overThreshold / chanVals.length) * 100, count: chanVals.length };
+    const q = (p: number) => chanVals[Math.min(n - 1, Math.floor(p * (n - 1)))];
+    return { avg, peak: chanVals[n - 1], overThresholdPct: (overThreshold / n) * 100, count: n, p50: q(0.5), p90: q(0.9), vals: chanVals };
   }, [history]);
 
   const currentChan = useMemo(() => {
     const vals = nodes.map((n) => n.channelUtilization).filter((x): x is number => typeof x === 'number' && x > 0);
     return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
   }, [nodes]);
+
+  // Where the current reading sits in the window's distribution (0–100).
+  const currentRank = useMemo(() => {
+    if (currentChan == null || !stats) return null;
+    const below = stats.vals.filter((v) => v <= currentChan).length;
+    return (below / stats.vals.length) * 100;
+  }, [currentChan, stats]);
 
   const exportCsv = () => downloadCsv(history.map((r) => ({
     ts_iso: new Date(r.ts).toISOString(),
@@ -246,7 +255,7 @@ function ChannelUtilTab({ nodes, history, scale, onSelectNode }: { nodes: NodeRe
       </div>
 
       <div>
-        <CongestionDiagnostic stats={stats} currentChan={currentChan} />
+        <CongestionDiagnostic stats={stats} currentChan={currentChan} currentRank={currentRank} scale={scale} />
         <div className="info-card">
           <p style={{ margin: 0 }}><strong>What "channel utilization" actually is.</strong></p>
           <p style={{ margin: '6px 0 0', fontSize: 12.5 }}>
@@ -267,7 +276,12 @@ function ChannelUtilTab({ nodes, history, scale, onSelectNode }: { nodes: NodeRe
   );
 }
 
-function CongestionDiagnostic({ stats, currentChan }: { stats: { avg: number; peak: number; overThresholdPct: number; count: number } | null; currentChan: number | null }) {
+function CongestionDiagnostic({ stats, currentChan, currentRank, scale }: {
+  stats: { avg: number; peak: number; overThresholdPct: number; count: number; p50: number; p90: number } | null;
+  currentChan: number | null;
+  currentRank: number | null;
+  scale: Scale;
+}) {
   let tone: 'good' | 'warn' | 'bad' = 'good';
   let headline = 'Mesh is healthy.';
   let detail = 'Channel utilization is comfortably below the 25% congestion threshold.';
@@ -292,6 +306,14 @@ function CongestionDiagnostic({ stats, currentChan }: { stats: { avg: number; pe
     <div className="info-card" style={{ borderLeftColor: colorVar }}>
       <p style={{ margin: 0, fontWeight: 500 }}>{headline}</p>
       <p style={{ margin: '6px 0 0', fontSize: 12.5, color: 'var(--text-dim)' }}>{detail}</p>
+      {stats && (
+        <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--text-faint)' }}>
+          {currentChan != null && currentRank != null
+            ? `Right now ${currentChan.toFixed(1)}% — higher than ${Math.round(currentRank)}% of readings over the last ${scale}. `
+            : ''}
+          Median {stats.p50.toFixed(1)}%, p90 {stats.p90.toFixed(1)}%, peak {stats.peak.toFixed(1)}% ({stats.count} sample{stats.count === 1 ? '' : 's'}).
+        </p>
+      )}
     </div>
   );
 }
