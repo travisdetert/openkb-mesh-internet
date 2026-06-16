@@ -83,6 +83,15 @@ export function TelemetryPanel({ nodes, utilHistory, state, onMessageNode }: Pro
     [nodes],
   );
 
+  // Master/detail: any tab can open a node's full telemetry in a slide-in
+  // drawer (legend chip, battery row, air-time row). null = closed.
+  const [drawerNum, setDrawerNum] = useState<number | null>(null);
+  const drawerNode = drawerNum != null ? nodes.find((n) => n.num === drawerNum) ?? null : null;
+  const drawerHistory = useMemo(
+    () => history.filter((r) => r.node_num === drawerNum).sort((a, b) => a.ts - b.ts),
+    [history, drawerNum],
+  );
+
   return (
     <div className="page">
       <h1 className="page-title">Telemetry</h1>
@@ -113,10 +122,21 @@ export function TelemetryPanel({ nodes, utilHistory, state, onMessageNode }: Pro
         }
       />
 
-      {tab === 'chan' && <ChannelUtilTab nodes={nodes} history={history} scale={scale} />}
-      {tab === 'battery' && <BatteryTab nodes={nodes} history={history} scale={scale} onMessageNode={onMessageNode} />}
-      {tab === 'airtime' && <AirtimeTab nodes={nodes} history={history} scale={scale} regionName={state.loraConfig?.regionName} />}
+      {tab === 'chan' && <ChannelUtilTab nodes={nodes} history={history} scale={scale} onSelectNode={setDrawerNum} />}
+      {tab === 'battery' && <BatteryTab nodes={nodes} history={history} scale={scale} onMessageNode={onMessageNode} onSelectNode={setDrawerNum} />}
+      {tab === 'airtime' && <AirtimeTab nodes={nodes} history={history} scale={scale} regionName={state.loraConfig?.regionName} onSelectNode={setDrawerNum} />}
       {tab === 'pernode' && <PerNodeTab nodes={nodes} history={history} scale={scale} state={state} onMessageNode={onMessageNode} />}
+
+      {drawerNode && (
+        <NodeDetailDrawer
+          node={drawerNode}
+          nodeHistory={drawerHistory}
+          scale={scale}
+          state={state}
+          onMessageNode={onMessageNode}
+          onClose={() => setDrawerNum(null)}
+        />
+      )}
     </div>
   );
 }
@@ -171,7 +191,7 @@ function ScalePicker({ scale, setScale }: { scale: Scale; setScale: (s: Scale) =
 // Tab 1: Channel utilization
 // ─────────────────────────────────────────────────────────────────────
 
-function ChannelUtilTab({ nodes, history, scale }: { nodes: NodeRecord[]; history: TelemetryHistoryRow[]; scale: Scale }) {
+function ChannelUtilTab({ nodes, history, scale, onSelectNode }: { nodes: NodeRecord[]; history: TelemetryHistoryRow[]; scale: Scale; onSelectNode: (n: number) => void }) {
   // Compute mesh-wide stats over the window.
   const stats = useMemo(() => {
     const chanVals = history.map((r) => r.chan_util).filter((x) => typeof x === 'number' && x > 0);
@@ -214,6 +234,7 @@ function ChannelUtilTab({ nodes, history, scale }: { nodes: NodeRecord[]; histor
           {history.length === 0 && (
             <div className="empty">No telemetry samples in this window. Telemetry packets typically arrive every 15–30 minutes per node.</div>
           )}
+          <ChartLegend history={history} field="chan_util" nodes={nodes} onSelect={onSelectNode} />
         </div>
 
         <div className="range-grid">
@@ -279,7 +300,7 @@ function CongestionDiagnostic({ stats, currentChan }: { stats: { avg: number; pe
 // Tab 2: Battery & power
 // ─────────────────────────────────────────────────────────────────────
 
-function BatteryTab({ nodes, history, scale, onMessageNode }: { nodes: NodeRecord[]; history: TelemetryHistoryRow[]; scale: Scale; onMessageNode?: (n: number) => void }) {
+function BatteryTab({ nodes, history, scale, onMessageNode, onSelectNode }: { nodes: NodeRecord[]; history: TelemetryHistoryRow[]; scale: Scale; onMessageNode?: (n: number) => void; onSelectNode: (n: number) => void }) {
   const withBattery = useMemo(() => nodes.filter((n) => n.batteryLevel !== undefined).sort((a, b) => (a.batteryLevel ?? 0) - (b.batteryLevel ?? 0)), [nodes]);
   const lowBattery = withBattery.filter((n) => (n.batteryLevel ?? 100) < 20);
 
@@ -321,7 +342,11 @@ function BatteryTab({ nodes, history, scale, onMessageNode }: { nodes: NodeRecor
               <tbody>
                 {withBattery.map((n) => (
                   <tr key={n.num} style={{ opacity: 1 }}>
-                    <td style={{ color: colorForNode(n.num) }}>{n.shortName || shortHex(n.num)}</td>
+                    <td>
+                      <button className="linkish" style={{ color: colorForNode(n.num) }} onClick={() => onSelectNode(n.num)} title="Open telemetry detail">
+                        {n.shortName || shortHex(n.num)}
+                      </button>
+                    </td>
                     <td>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                         <span className={`bar ${batteryClass(n.batteryLevel ?? 0)}`} style={{ display: 'inline-block', width: 60 }}>
@@ -366,7 +391,7 @@ function BatteryTab({ nodes, history, scale, onMessageNode }: { nodes: NodeRecor
 // Tab 3: Air time
 // ─────────────────────────────────────────────────────────────────────
 
-function AirtimeTab({ nodes, history, scale, regionName }: { nodes: NodeRecord[]; history: TelemetryHistoryRow[]; scale: Scale; regionName?: string }) {
+function AirtimeTab({ nodes, history, scale, regionName, onSelectNode }: { nodes: NodeRecord[]; history: TelemetryHistoryRow[]; scale: Scale; regionName?: string; onSelectNode: (n: number) => void }) {
   // Ranking: most recent air util per node.
   const ranked = useMemo(() => {
     const latest = new Map<number, number>();
@@ -398,6 +423,7 @@ function AirtimeTab({ nodes, history, scale, regionName }: { nodes: NodeRecord[]
             thresholdY={isEU ? 1 : undefined}
             thresholdLabel={isEU ? 'EU 1% cap' : undefined}
           />
+          <ChartLegend history={history} field="air_util_tx" nodes={nodes} onSelect={onSelectNode} />
         </div>
 
         <div className="card">
@@ -410,7 +436,11 @@ function AirtimeTab({ nodes, history, scale, regionName }: { nodes: NodeRecord[]
               <tbody>
                 {ranked.slice(0, 20).map((r) => (
                   <tr key={r.num}>
-                    <td style={{ color: colorForNode(r.num) }}>{r.name}</td>
+                    <td>
+                      <button className="linkish" style={{ color: colorForNode(r.num) }} onClick={() => onSelectNode(r.num)} title="Open telemetry detail">
+                        {r.name}
+                      </button>
+                    </td>
                     <td>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                         <span className={`bar ${r.air > dutyCycleCap ? 'bad' : r.air > dutyCycleCap * 0.5 ? 'warn' : 'good'}`} style={{ display: 'inline-block', width: 80 }}>
@@ -487,17 +517,6 @@ function PerNodeTab({ nodes, history, scale, state, onMessageNode }: { nodes: No
     );
   }
 
-  const exportCsv = () => {
-    if (!node) return;
-    downloadCsv(nodeHistory.map((r) => ({
-      ts_iso: new Date(r.ts).toISOString(),
-      battery_pct: r.battery.toString(),
-      voltage_v: r.voltage.toFixed(2),
-      chan_util_pct: r.chan_util.toFixed(2),
-      air_util_tx_pct: r.air_util_tx.toFixed(2),
-    })), `telemetry-${node.shortName || shortHex(node.num)}-${scale}`);
-  };
-
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16 }}>
       <div className="card" style={{ padding: 6 }}>
@@ -533,28 +552,130 @@ function PerNodeTab({ nodes, history, scale, state, onMessageNode }: { nodes: No
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
-                <button className="ghost" style={{ padding: '4px 10px', fontSize: 12 }} onClick={exportCsv}>⇩ CSV</button>
+                <button className="ghost" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => exportNodeCsv(node, nodeHistory, scale)}>⇩ CSV</button>
                 {onMessageNode && state.myInfo?.myNodeNum !== node.num && (
                   <button className="primary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => onMessageNode(node.num)}>Message</button>
                 )}
               </div>
             </div>
 
-            <div className="range-grid" style={{ marginBottom: 12 }}>
-              <Metric label="Battery" value={node.batteryLevel !== undefined ? `${node.batteryLevel}%` : '—'} tone={node.batteryLevel === undefined ? 'dim' : node.batteryLevel > 50 ? 'good' : node.batteryLevel > 20 ? 'warn' : 'bad'} />
-              <Metric label="Voltage" value={node.voltage !== undefined ? `${node.voltage.toFixed(2)} V` : '—'} />
-              <Metric label="Channel util" value={node.channelUtilization !== undefined ? `${node.channelUtilization.toFixed(1)}%` : '—'} tone={node.channelUtilization !== undefined && node.channelUtilization >= CONGESTION_THRESHOLD ? 'warn' : 'good'} />
-              <Metric label="Air util TX" value={node.airUtilTx !== undefined ? `${node.airUtilTx.toFixed(2)}%` : '—'} />
-            </div>
-
-            <SingleNodeChart history={nodeHistory} field="battery" yMax={100} yLabel="%" title="Battery" color="#66d39a" />
-            <SingleNodeChart history={nodeHistory} field="voltage" yMax={4.5} yLabel="V" title="Voltage" color="#ffb86b" />
-            <SingleNodeChart history={nodeHistory} field="chan_util" yMax={50} yLabel="%" title="Channel utilization" color="#5cc8ff" thresholdY={CONGESTION_THRESHOLD} />
-            <SingleNodeChart history={nodeHistory} field="air_util_tx" yMax={5} yLabel="%" title="Air util TX" color="#c490ff" />
+            <NodeTelemetryBody node={node} nodeHistory={nodeHistory} />
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Shared node-detail pieces (Per-node tab + slide-in drawer)
+// ─────────────────────────────────────────────────────────────────────
+
+/** Export one node's telemetry history as CSV. */
+function exportNodeCsv(node: NodeRecord, nodeHistory: TelemetryHistoryRow[], scale: Scale): void {
+  downloadCsv(nodeHistory.map((r) => ({
+    ts_iso: new Date(r.ts).toISOString(),
+    battery_pct: r.battery.toString(),
+    voltage_v: r.voltage.toFixed(2),
+    chan_util_pct: r.chan_util.toFixed(2),
+    air_util_tx_pct: r.air_util_tx.toFixed(2),
+  })), `telemetry-${node.shortName || shortHex(node.num)}-${scale}`);
+}
+
+/** Last-known metric grid + per-metric history sparklines for one node.
+ *  Shared verbatim by the Per-node tab and the detail drawer. */
+function NodeTelemetryBody({ node, nodeHistory }: { node: NodeRecord; nodeHistory: TelemetryHistoryRow[] }) {
+  return (
+    <>
+      <div className="range-grid" style={{ marginBottom: 12 }}>
+        <Metric label="Battery" value={node.batteryLevel !== undefined ? `${node.batteryLevel}%` : '—'} tone={node.batteryLevel === undefined ? 'dim' : node.batteryLevel > 50 ? 'good' : node.batteryLevel > 20 ? 'warn' : 'bad'} />
+        <Metric label="Voltage" value={node.voltage !== undefined ? `${node.voltage.toFixed(2)} V` : '—'} />
+        <Metric label="Channel util" value={node.channelUtilization !== undefined ? `${node.channelUtilization.toFixed(1)}%` : '—'} tone={node.channelUtilization !== undefined && node.channelUtilization >= CONGESTION_THRESHOLD ? 'warn' : 'good'} />
+        <Metric label="Air util TX" value={node.airUtilTx !== undefined ? `${node.airUtilTx.toFixed(2)}%` : '—'} />
+      </div>
+      <SingleNodeChart history={nodeHistory} field="battery" yMax={100} yLabel="%" title="Battery" color="#66d39a" />
+      <SingleNodeChart history={nodeHistory} field="voltage" yMax={4.5} yLabel="V" title="Voltage" color="#ffb86b" />
+      <SingleNodeChart history={nodeHistory} field="chan_util" yMax={50} yLabel="%" title="Channel utilization" color="#5cc8ff" thresholdY={CONGESTION_THRESHOLD} />
+      <SingleNodeChart history={nodeHistory} field="air_util_tx" yMax={5} yLabel="%" title="Air util TX" color="#c490ff" />
+    </>
+  );
+}
+
+/** Clickable per-node legend under a multi-node chart. Lists every node with
+ *  at least one positive sample for `field`, color-matched to its chart line;
+ *  clicking opens that node's detail drawer. */
+function ChartLegend({ history, field, nodes, onSelect }: {
+  history: TelemetryHistoryRow[];
+  field: 'chan_util' | 'air_util_tx';
+  nodes: NodeRecord[];
+  onSelect: (n: number) => void;
+}) {
+  const present = useMemo(() => {
+    const seen = new Set<number>();
+    const out: number[] = [];
+    for (const r of history) {
+      if ((r[field] as number) > 0 && !seen.has(r.node_num)) { seen.add(r.node_num); out.push(r.node_num); }
+    }
+    return out;
+  }, [history, field]);
+
+  if (present.length === 0) return null;
+  return (
+    <div className="chart-legend">
+      {present.map((num) => (
+        <button key={num} className="legend-chip" onClick={() => onSelect(num)} title="Open telemetry detail">
+          <span className="legend-dot" style={{ background: colorForNode(num) }} />
+          {nameFor(nodes, num)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Slide-in detail drawer: full per-metric history + last-known values for one
+ *  node, openable from any tab. Closes on scrim click, the × button, or Esc. */
+function NodeDetailDrawer({ node, nodeHistory, scale, state, onMessageNode, onClose }: {
+  node: NodeRecord;
+  nodeHistory: TelemetryHistoryRow[];
+  scale: Scale;
+  state: ConnectionState;
+  onMessageNode?: (n: number) => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <>
+      <div className="drawer-scrim" onClick={onClose} />
+      <aside className="drawer-panel" role="dialog" aria-label="Node telemetry detail">
+        <div className="drawer-head">
+          <div>
+            <h2 style={{ margin: 0, fontSize: 16 }}>{node.longName || node.shortName || shortHex(node.num)}</h2>
+            <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontFamily: 'var(--mono)', marginTop: 2 }}>
+              {shortHex(node.num)} · {nodeHistory.length} sample{nodeHistory.length === 1 ? '' : 's'} over {scale}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button className="ghost" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => exportNodeCsv(node, nodeHistory, scale)}>⇩ CSV</button>
+            {onMessageNode && state.myInfo?.myNodeNum !== node.num && (
+              <button className="primary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => { onMessageNode(node.num); onClose(); }}>Message</button>
+            )}
+            <button className="drawer-close" onClick={onClose} aria-label="Close" title="Close (Esc)">×</button>
+          </div>
+        </div>
+        <div className="drawer-body">
+          {nodeHistory.length === 0 ? (
+            <div className="empty">No telemetry samples for this node in the current {scale} window. Widen the time range to see history.</div>
+          ) : (
+            <NodeTelemetryBody node={node} nodeHistory={nodeHistory} />
+          )}
+        </div>
+      </aside>
+    </>
   );
 }
 

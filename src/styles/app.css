@@ -1450,6 +1450,97 @@ h1.page-title { font-size: 18px; margin: 0 0 4px; }
 .onboarding-dot:hover { background: var(--text-faint); }
 .onboarding-dot.done { background: rgba(120, 180, 255, 0.55); }
 .onboarding-dot.active { background: var(--accent); width: 36px; }
+
+/* ── Node telemetry detail drawer (Telemetry panel) ─────────────────── */
+.drawer-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 9998;
+  animation: onboarding-fade 0.18s ease-out;
+}
+.drawer-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: 540px;
+  max-width: calc(100vw - 48px);
+  background: var(--bg-elev);
+  border-left: 1px solid var(--line);
+  box-shadow: -16px 0 50px rgba(0, 0, 0, 0.5);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  animation: drawer-slide-in 0.2s ease-out;
+}
+@keyframes drawer-slide-in {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+.drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.drawer-body {
+  padding: 16px 18px;
+  overflow-y: auto;
+  flex: 1;
+}
+.drawer-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.drawer-close:hover { color: var(--text); }
+
+/* Clickable per-node legend under the multi-node charts. */
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.legend-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-elev-2);
+  color: var(--text);
+  padding: 2px 9px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.legend-chip:hover { border-color: var(--text-faint); }
+.legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+}
+
+/* Borderless text button that looks like inline text but is clickable
+   (e.g. a node name in a table that opens the detail drawer). */
+.linkish {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.linkish:hover { text-decoration: underline; }
 .onboarding-skip {
   margin-left: auto;
   background: transparent;
