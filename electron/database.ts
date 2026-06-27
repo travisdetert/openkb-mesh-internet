@@ -22,7 +22,7 @@ export interface NodeRow {
 }
 
 export interface PositionRow { node_num: number; lat: number; lon: number; altitude: number; ts: number; }
-export interface DeviceTelemetryRow { node_num: number; battery: number; voltage: number; chan_util: number; air_util_tx: number; ts: number; }
+export interface DeviceTelemetryRow { node_num: number; battery: number | null; voltage: number | null; chan_util: number; air_util_tx: number; ts: number; }
 export interface MessageRow { id: number; from_num: number; to_num: number; channel: number; text: string; rssi: number; snr: number; hop_start: number; hop_limit: number; ts: number; }
 export interface PacketRow { id: number; from_num: number; to_num: number; portnum: number; rssi: number; snr: number; hop_start: number; hop_limit: number; ts: number; }
 export interface TracerouteRow { request_id: number; from_num: number; to_num: number; route_json: string; sent_ts: number; recv_ts: number | null; rssi: number; snr: number; }
@@ -169,6 +169,16 @@ export class MeshDatabase {
         updated_at INTEGER NOT NULL
       );
     `);
+
+    // One-time cleanup: early builds stored battery=0/voltage=0 whenever a
+    // telemetry packet carried only channel metrics, leaving phantom power
+    // samples that yank voltage/battery charts to the floor. A reporting node
+    // never reads exactly 0.00 V, so null those out — the row's chan_util /
+    // air_util_tx data (if any) is preserved.
+    this.db.exec(`
+      UPDATE device_telemetry SET voltage = NULL WHERE voltage = 0;
+      UPDATE device_telemetry SET battery = NULL WHERE battery = 0 AND voltage IS NULL;
+    `);
   }
 
   // ── Nodes ──────────────────────────────────────────────────────────────
@@ -235,7 +245,10 @@ export class MeshDatabase {
 
   // ── Device telemetry ───────────────────────────────────────────────────
 
-  insertDeviceTelemetry(num: number, battery: number, voltage: number, chanUtil: number, airUtilTx: number, ts: number) {
+  // battery/voltage are nullable: a telemetry packet may carry only channel
+  // metrics. Pass null (not 0) for absent power fields so the history isn't
+  // polluted with phantom 0%/0.00V samples that drag charts to the floor.
+  insertDeviceTelemetry(num: number, battery: number | null, voltage: number | null, chanUtil: number, airUtilTx: number, ts: number) {
     this.db.prepare(`INSERT INTO device_telemetry (node_num, battery, voltage, chan_util, air_util_tx, ts) VALUES (?, ?, ?, ?, ?, ?)`)
       .run(num, battery, voltage, chanUtil, airUtilTx, ts);
   }

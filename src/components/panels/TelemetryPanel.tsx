@@ -8,6 +8,7 @@ import {
   nodeShortHex as shortHex,
   nodeColor as colorForNode,
 } from '../../lib/node-identity';
+import { batteryLabel, batteryBarPct, isExternalPower } from '../../lib/battery';
 
 interface Props {
   nodes: NodeRecord[];
@@ -68,7 +69,7 @@ export function TelemetryPanel({ nodes, utilHistory, state, onMessageNode }: Pro
       const exists = prev.some((r) => r.node_num === last.nodeId && r.ts === last.t);
       if (exists) return prev;
       return [...prev, {
-        node_num: last.nodeId, battery: 0, voltage: 0,
+        node_num: last.nodeId, battery: null, voltage: null,
         chan_util: last.chanUtil, air_util_tx: last.airUtilTx, ts: last.t,
       }];
     });
@@ -123,7 +124,7 @@ export function TelemetryPanel({ nodes, utilHistory, state, onMessageNode }: Pro
       />
 
       {tab === 'chan' && <ChannelUtilTab nodes={nodes} history={history} scale={scale} onSelectNode={setDrawerNum} />}
-      {tab === 'battery' && <BatteryTab nodes={nodes} history={history} scale={scale} onMessageNode={onMessageNode} onSelectNode={setDrawerNum} />}
+      {tab === 'battery' && <BatteryTab nodes={nodes} history={history} scale={scale} state={state} onMessageNode={onMessageNode} onSelectNode={setDrawerNum} />}
       {tab === 'airtime' && <AirtimeTab nodes={nodes} history={history} scale={scale} regionName={state.loraConfig?.regionName} onSelectNode={setDrawerNum} />}
       {tab === 'pernode' && <PerNodeTab nodes={nodes} history={history} scale={scale} state={state} onMessageNode={onMessageNode} />}
 
@@ -322,16 +323,24 @@ function CongestionDiagnostic({ stats, currentChan, currentRank, scale }: {
 // Tab 2: Battery & power
 // ─────────────────────────────────────────────────────────────────────
 
-function BatteryTab({ nodes, history, scale, onMessageNode, onSelectNode }: { nodes: NodeRecord[]; history: TelemetryHistoryRow[]; scale: Scale; onMessageNode?: (n: number) => void; onSelectNode: (n: number) => void }) {
+function BatteryTab({ nodes, history, scale, state, onMessageNode, onSelectNode }: { nodes: NodeRecord[]; history: TelemetryHistoryRow[]; scale: Scale; state: ConnectionState; onMessageNode?: (n: number) => void; onSelectNode: (n: number) => void }) {
   const withBattery = useMemo(() => nodes.filter((n) => n.batteryLevel !== undefined).sort((a, b) => (a.batteryLevel ?? 0) - (b.batteryLevel ?? 0)), [nodes]);
   const lowBattery = withBattery.filter((n) => (n.batteryLevel ?? 100) < 20);
+
+  // Per-node solar / charging verdict from the voltage history. See computeSolar.
+  const myNum = state.myInfo?.myNodeNum;
+  const solar = useMemo(() => {
+    const byNode = new Map<number, TelemetryHistoryRow[]>();
+    for (const r of history) (byNode.get(r.node_num) ?? byNode.set(r.node_num, []).get(r.node_num)!).push(r);
+    return [...byNode.entries()].map(([num, rows]) => ({ num, info: computeSolar(rows) }));
+  }, [history]);
 
   // Per-node voltage change across the window (last − first sample). Surfaces
   // draining battery nodes and solar nodes whose panel isn't keeping up.
   const vTrend = useMemo(() => {
     const byNode = new Map<number, { ts: number; v: number }[]>();
     for (const r of history) {
-      if (r.voltage > 0) (byNode.get(r.node_num) ?? byNode.set(r.node_num, []).get(r.node_num)!).push({ ts: r.ts, v: r.voltage });
+      if (r.voltage != null && r.voltage > 0) (byNode.get(r.node_num) ?? byNode.set(r.node_num, []).get(r.node_num)!).push({ ts: r.ts, v: r.voltage });
     }
     const out = new Map<number, number>();
     for (const [num, arr] of byNode) {
@@ -348,12 +357,12 @@ function BatteryTab({ nodes, history, scale, onMessageNode, onSelectNode }: { no
     [vTrend],
   );
 
-  const exportCsv = () => downloadCsv(history.filter((r) => r.battery > 0).map((r) => ({
+  const exportCsv = () => downloadCsv(history.filter((r) => r.battery != null && r.battery > 0).map((r) => ({
     ts_iso: new Date(r.ts).toISOString(),
     node: shortHex(r.node_num),
     short_name: nameFor(nodes, r.node_num),
-    battery_pct: r.battery.toString(),
-    voltage_v: r.voltage.toFixed(2),
+    battery_pct: (r.battery ?? '').toString(),
+    voltage_v: r.voltage != null ? r.voltage.toFixed(2) : '',
   })), `telemetry-battery-${scale}`);
 
   return (
@@ -392,12 +401,16 @@ function BatteryTab({ nodes, history, scale, onMessageNode, onSelectNode }: { no
                       </button>
                     </td>
                     <td>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        <span className={`bar ${batteryClass(n.batteryLevel ?? 0)}`} style={{ display: 'inline-block', width: 60 }}>
-                          <div style={{ width: `${Math.min(100, n.batteryLevel ?? 0)}%` }} />
+                      {isExternalPower(n.batteryLevel) ? (
+                        <span title="Running on external power (USB/solar) — no battery percentage reported">{batteryLabel(n.batteryLevel)}</span>
+                      ) : (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <span className={`bar ${batteryClass(n.batteryLevel ?? 0)}`} style={{ display: 'inline-block', width: 60 }}>
+                            <div style={{ width: `${batteryBarPct(n.batteryLevel)}%` }} />
+                          </span>
+                          {batteryLabel(n.batteryLevel)}
                         </span>
-                        {n.batteryLevel}%
-                      </span>
+                      )}
                     </td>
                     <td>
                       {n.voltage !== undefined ? `${n.voltage.toFixed(2)} V` : '—'}
@@ -417,6 +430,7 @@ function BatteryTab({ nodes, history, scale, onMessageNode, onSelectNode }: { no
       </div>
 
       <div>
+        <SolarHealthCard solar={solar} nodes={nodes} myNum={myNum} scale={scale} onSelectNode={onSelectNode} />
         {declining.length > 0 && (
           <div className="info-card" style={{ borderLeftColor: 'var(--warn)' }}>
             <p style={{ margin: 0, fontWeight: 500 }}>{declining.length} node{declining.length === 1 ? '' : 's'} losing voltage over {scale}</p>
@@ -461,6 +475,116 @@ function VoltageTrend({ delta }: { delta?: number }) {
     >
       {up ? '↑' : '↓'}{delta > 0 ? '+' : ''}{delta.toFixed(2)}
     </span>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Solar / charging health
+// ─────────────────────────────────────────────────────────────────────
+
+type SolarVerdict = 'charging-healthy' | 'charging-insufficient' | 'no-charge-declining' | 'stable' | 'insufficient-data';
+
+interface SolarInfo {
+  verdict: SolarVerdict;
+  net: number;       // hourly-smoothed voltage change across the window (V)
+  dayGain: number;   // total voltage gained during daytime hours, 08:00–18:00 (V)
+  buckets: number;   // number of hourly samples the verdict is based on
+}
+
+// Classify a node's voltage behaviour as a charging signature. We bucket
+// samples into hourly averages first — minute-to-minute jitter (±0.01 V) would
+// otherwise swamp the real signal — then look for the solar "sawtooth": voltage
+// climbing during daylight. A panel that's working pushes voltage up in the
+// daytime even if the net trend is flat; a dead/disconnected panel only ever
+// declines. Thresholds are deliberately loose: this is a directional verdict,
+// not a fuel gauge.
+function computeSolar(rows: TelemetryHistoryRow[]): SolarInfo {
+  const byHour = new Map<number, { sum: number; n: number }>();
+  for (const r of rows) {
+    if (r.voltage == null || r.voltage <= 0) continue;
+    const hourKey = Math.floor(r.ts / 3_600_000);
+    const b = byHour.get(hourKey) ?? { sum: 0, n: 0 };
+    b.sum += r.voltage; b.n++;
+    byHour.set(hourKey, b);
+  }
+  const series = [...byHour.entries()].sort((a, b) => a[0] - b[0]).map(([hourKey, b]) => ({ hourKey, v: b.sum / b.n }));
+  if (series.length < 4) return { verdict: 'insufficient-data', net: 0, dayGain: 0, buckets: series.length };
+
+  let dayGain = 0;
+  for (let i = 1; i < series.length; i++) {
+    const dv = series[i].v - series[i - 1].v;
+    if (dv <= 0) continue;
+    const hr = new Date(series[i].hourKey * 3_600_000).getHours();
+    if (hr >= 8 && hr < 18) dayGain += dv;
+  }
+  const net = series[series.length - 1].v - series[0].v;
+
+  // Red "no charging" needs a meaningful decline, not just noise: -0.15 V
+  // matches the panel's existing "losing voltage" bar, so a node holding
+  // roughly flat (e.g. a solar node whose panel is keeping up) reads ⚪ Stable
+  // instead of false-alarming red.
+  let verdict: SolarVerdict;
+  if (dayGain >= 0.05 && net >= -0.02) verdict = 'charging-healthy';
+  else if (dayGain >= 0.05) verdict = 'charging-insufficient';
+  else if (net <= -0.15) verdict = 'no-charge-declining';
+  else verdict = 'stable';
+  return { verdict, net, dayGain, buckets: series.length };
+}
+
+const SOLAR_META: Record<SolarVerdict, { label: string; color: string; rank: number; blurb: string }> = {
+  'no-charge-declining':   { label: '🔴 No charging detected', color: 'var(--bad)',  rank: 0, blurb: 'Voltage only fell across the window — battery-only, or the solar panel isn\'t delivering. Check panel orientation, shading, wiring/polarity, and the charge controller.' },
+  'charging-insufficient': { label: '🟠 Panel not keeping up', color: 'var(--warn)', rank: 1, blurb: 'Daytime charging is happening, but the battery still net-declined — the panel can\'t outpace the load. Undersized/shaded panel, or the node is transmitting too much.' },
+  'charging-healthy':      { label: '🟢 Charging OK',          color: 'var(--good)', rank: 2, blurb: 'Clear daytime voltage rise and the battery is holding or gaining. The charge path is working.' },
+  'stable':                { label: '⚪ Stable / no swing',     color: 'var(--text-faint)', rank: 3, blurb: 'Voltage is flat with no daytime swing — typically external/USB power or a healthy battery that isn\'t cycling.' },
+  'insufficient-data':     { label: '', color: '', rank: 4, blurb: '' },
+};
+
+// Right-column card that turns the per-node voltage history into a plain-language
+// charging verdict. Surfaces failing/struggling solar nodes first; always shows
+// the connected radio ("this device") even when it reads stable.
+function SolarHealthCard({ solar, nodes, myNum, scale, onSelectNode }: {
+  solar: { num: number; info: SolarInfo }[];
+  nodes: NodeRecord[];
+  myNum?: number;
+  scale: Scale;
+  onSelectNode: (n: number) => void;
+}) {
+  const shown = useMemo(() => solar
+    .filter((s) => s.info.verdict !== 'insufficient-data' && (s.info.verdict !== 'stable' || s.num === myNum))
+    .sort((a, b) => SOLAR_META[a.info.verdict].rank - SOLAR_META[b.info.verdict].rank || a.info.net - b.info.net)
+    .slice(0, 8),
+  [solar, myNum]);
+
+  if (shown.length === 0) return null;
+  const fmt = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)} V`;
+
+  return (
+    <div className="info-card" style={{ borderLeftColor: SOLAR_META[shown[0].info.verdict].color }}>
+      <p style={{ margin: 0, fontWeight: 500 }}>Solar / charging health <span style={{ color: 'var(--text-faint)', fontWeight: 400, fontSize: 12 }}>over {scale}</span></p>
+      <ul style={{ margin: '8px 0 0', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {shown.map(({ num, info }) => {
+          const meta = SOLAR_META[info.verdict];
+          return (
+            <li key={num} style={{ fontSize: 12.5 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+                <button className="linkish" style={{ color: colorForNode(num) }} onClick={() => onSelectNode(num)} title="Open telemetry detail">
+                  {nameFor(nodes, num)}
+                </button>
+                {num === myNum && <span style={{ fontSize: 10.5, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>this device</span>}
+                <span style={{ color: meta.color, fontWeight: 500 }}>{meta.label}</span>
+              </div>
+              <div style={{ color: 'var(--text-faint)', fontFamily: 'var(--mono)', fontSize: 11.5, marginTop: 1 }}>
+                net {fmt(info.net)} · daytime gain {fmt(info.dayGain)} · {info.buckets}h
+              </div>
+              <div style={{ color: 'var(--text-dim)', marginTop: 2 }}>{meta.blurb}</div>
+            </li>
+          );
+        })}
+      </ul>
+      <p style={{ margin: '8px 0 0', fontSize: 11.5, color: 'var(--text-faint)' }}>
+        A working panel makes voltage climb during daylight (08:00–18:00). "No charging" means voltage only fell — the panel isn't contributing. Needs ≥4 hours of samples; widen the range for a firmer read.
+      </p>
+    </div>
   );
 }
 
@@ -610,7 +734,7 @@ function PerNodeTab({ nodes, history, scale, state, onMessageNode }: { nodes: No
               <span className="convo-label" style={{ color: colorForNode(n.num) }}>{n.shortName || shortHex(n.num)}</span>
             </div>
             <div className="convo-preview">
-              {n.batteryLevel !== undefined ? `${n.batteryLevel}% · ` : ''}
+              {n.batteryLevel !== undefined ? `${batteryLabel(n.batteryLevel)} · ` : ''}
               {n.voltage !== undefined ? `${n.voltage.toFixed(2)}V · ` : ''}
               {n.airUtilTx !== undefined ? `${n.airUtilTx.toFixed(2)}% air` : ''}
             </div>
@@ -652,8 +776,8 @@ function PerNodeTab({ nodes, history, scale, state, onMessageNode }: { nodes: No
 function exportNodeCsv(node: NodeRecord, nodeHistory: TelemetryHistoryRow[], scale: Scale): void {
   downloadCsv(nodeHistory.map((r) => ({
     ts_iso: new Date(r.ts).toISOString(),
-    battery_pct: r.battery.toString(),
-    voltage_v: r.voltage.toFixed(2),
+    battery_pct: r.battery != null ? r.battery.toString() : '',
+    voltage_v: r.voltage != null ? r.voltage.toFixed(2) : '',
     chan_util_pct: r.chan_util.toFixed(2),
     air_util_tx_pct: r.air_util_tx.toFixed(2),
   })), `telemetry-${node.shortName || shortHex(node.num)}-${scale}`);
@@ -665,7 +789,7 @@ function NodeTelemetryBody({ node, nodeHistory }: { node: NodeRecord; nodeHistor
   return (
     <>
       <div className="range-grid" style={{ marginBottom: 12 }}>
-        <Metric label="Battery" value={node.batteryLevel !== undefined ? `${node.batteryLevel}%` : '—'} tone={node.batteryLevel === undefined ? 'dim' : node.batteryLevel > 50 ? 'good' : node.batteryLevel > 20 ? 'warn' : 'bad'} />
+        <Metric label="Battery" value={batteryLabel(node.batteryLevel)} tone={node.batteryLevel === undefined ? 'dim' : isExternalPower(node.batteryLevel) ? 'good' : node.batteryLevel > 50 ? 'good' : node.batteryLevel > 20 ? 'warn' : 'bad'} />
         <Metric label="Voltage" value={node.voltage !== undefined ? `${node.voltage.toFixed(2)} V` : '—'} />
         <Metric label="Channel util" value={node.channelUtilization !== undefined ? `${node.channelUtilization.toFixed(1)}%` : '—'} tone={node.channelUtilization !== undefined && node.channelUtilization >= CONGESTION_THRESHOLD ? 'warn' : 'good'} />
         <Metric label="Air util TX" value={node.airUtilTx !== undefined ? `${node.airUtilTx.toFixed(2)}%` : '—'} />

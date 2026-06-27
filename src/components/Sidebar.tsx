@@ -2,6 +2,7 @@ import React from 'react';
 import { TABS, TabId } from './TopNav';
 import type { ConnectionView } from '../hooks/useMesh';
 import { useMeshContext } from '../hooks/MeshContext';
+import { isExternalPower, batteryLabel } from '../lib/battery';
 
 type Tone = 'accent' | 'good' | 'warn' | 'bad' | 'dim';
 interface Badge { text: string; tone?: Tone }
@@ -105,12 +106,12 @@ export function Sidebar({
                 : c.state.status === 'disconnected' ? 'bad'
                 : 'warn';
               const cBatt = cNode?.batteryLevel;
-              const cBattColor = cBatt === undefined ? undefined : cBatt > 50 ? 'var(--good)' : cBatt > 20 ? 'var(--warn)' : 'var(--bad)';
+              const cBattColor = cBatt === undefined ? undefined : isExternalPower(cBatt) ? 'var(--good)' : cBatt > 50 ? 'var(--good)' : cBatt > 20 ? 'var(--warn)' : 'var(--bad)';
               const cNodes = c.nodes.length;
               const subText = isRebooting
                 ? (rebootRemaining > 0 ? `↻ rebooting in ${rebootRemaining}s…` : '↻ rebooting now…')
                 : c.state.status === 'ready'
-                  ? `${cNodes} nodes${cBatt !== undefined ? ' · 🔋 ' + cBatt + '%' : ''}`
+                  ? `${cNodes} nodes${cBatt !== undefined ? (isExternalPower(cBatt) ? ' · ' + batteryLabel(cBatt) : ' · 🔋 ' + batteryLabel(cBatt)) : ''}`
                   : c.state.status === 'configuring' ? 'syncing nodeDB…'
                   : c.state.status === 'connecting'  ? 'opening port…'
                   : 'disconnected';

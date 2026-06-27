@@ -200,6 +200,11 @@ export class MeshtasticController extends EventEmitter {
   /** In-memory ring of recent outgoing packet traces, keyed by packetId. */
   private traces = new Map<number, PacketTrace>();
   private maxTraces = 100;
+  /** Per-node latest telemetry measurement time (ms epoch). A relayed/MQTT
+   *  echo carries the original node's measurement time, so a sample whose
+   *  time we've already seen is a stale duplicate — dropped to keep it from
+   *  punching notches into the charts or flickering the live readout. */
+  private lastTelemetryAt = new Map<number, number>();
   /** Sync watchdog state. Active during `configuring`; null otherwise. */
   private syncTimer: NodeJS.Timeout | null = null;
   private syncStartedAt = 0;
@@ -974,14 +979,36 @@ export class MeshtasticController extends EventEmitter {
           info.channelUtilization !== undefined || info.airUtilTx !== undefined) {
         this.db.insertDeviceTelemetry(
           info.num,
-          info.batteryLevel ?? 0,
-          info.voltage ?? 0,
+          this.posOrNull(info.batteryLevel),
+          this.posOrNull(info.voltage),
           info.channelUtilization ?? 0,
           info.airUtilTx ?? 0,
           ts,
         );
       }
     }
+  }
+
+  /** True when a telemetry sample is a stale duplicate — its node-stamped
+   *  measurement time is not newer than one we've already recorded for that
+   *  node (i.e. a relayed/MQTT echo of an old reading). Samples with no
+   *  measurement time (e.g. direct local telemetry) are always treated as
+   *  fresh. Records the time as a side effect when the sample is fresh. */
+  private isStaleTelemetry(from: number, measuredAt?: number): boolean {
+    if (measuredAt === undefined) return false;
+    const last = this.lastTelemetryAt.get(from);
+    if (last !== undefined && measuredAt <= last) return true;
+    this.lastTelemetryAt.set(from, measuredAt);
+    return false;
+  }
+
+  /** Normalize a battery/voltage reading for storage: 0 and undefined both mean
+   *  "not really reported" (e.g. an external-power node sends batteryLevel=101
+   *  with voltage=0), so collapse them to null rather than writing a phantom
+   *  0.00 sample that drags charts to the floor. The 101 sentinel is positive
+   *  and passes through untouched. */
+  private posOrNull(n?: number): number | null {
+    return n != null && n > 0 ? n : null;
   }
 
   private handlePacket(pkt: MeshPacket, raw: Uint8Array): void {
@@ -1112,7 +1139,7 @@ export class MeshtasticController extends EventEmitter {
       }
     }
 
-    if (pkt.telemetry && pkt.from) {
+    if (pkt.telemetry && pkt.from && !this.isStaleTelemetry(pkt.from, pkt.telemetry.measuredAt)) {
       const t = pkt.telemetry;
       const existing = this.nodes.get(pkt.from);
       if (existing) {
@@ -1135,8 +1162,8 @@ export class MeshtasticController extends EventEmitter {
           t.channelUtilization !== undefined || t.airUtilTx !== undefined)) {
         this.db.insertDeviceTelemetry(
           pkt.from,
-          t.batteryLevel ?? 0,
-          t.voltage ?? 0,
+          this.posOrNull(t.batteryLevel),
+          this.posOrNull(t.voltage),
           t.channelUtilization ?? 0,
           t.airUtilTx ?? 0,
           now,

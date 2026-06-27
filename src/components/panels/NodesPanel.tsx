@@ -7,6 +7,7 @@ import { useAntennaOverrides } from '../../hooks/useAntennaOverrides';
 import { useOwnedAntennas } from '../../hooks/useOwnedRosters';
 import { ANTENNA_CATALOG } from '../../lib/antenna-catalog';
 import { ROLE_NAMES } from '../../lib/device-roles';
+import { batteryLabel, batteryBarPct, isExternalPower } from '../../lib/battery';
 
 const STALE_S = 24 * 3600;
 const AGING_S = 3600;
@@ -397,12 +398,16 @@ export function NodesPanel({ nodes, state, onMessageNode, go }: { nodes: NodeRec
                         </td>
                         <td>
                           {n.batteryLevel !== undefined ? (
-                            <span>
-                              <span className="bar" style={{ display: 'inline-block', width: 36, marginRight: 6 }}>
-                                <div style={{ width: `${Math.min(100, n.batteryLevel)}%` }} />
+                            isExternalPower(n.batteryLevel) ? (
+                              <span title="Running on external power (USB/solar) — no battery percentage reported">{batteryLabel(n.batteryLevel)}</span>
+                            ) : (
+                              <span>
+                                <span className="bar" style={{ display: 'inline-block', width: 36, marginRight: 6 }}>
+                                  <div style={{ width: `${batteryBarPct(n.batteryLevel)}%` }} />
+                                </span>
+                                {batteryLabel(n.batteryLevel)}
                               </span>
-                              {n.batteryLevel}%
-                            </span>
+                            )
                           ) : '—'}
                         </td>
                         <td>{ago(n.lastHeard)}</td>
@@ -509,7 +514,7 @@ function NodeDetail({
         <dt>Hops away</dt><dd>{node.hopsAway ?? '—'}</dd>
         <dt>RSSI</dt><dd>{node.rssi !== undefined && node.rssi !== 0 ? `${node.rssi} dBm` : '—'}</dd>
         <dt>SNR</dt><dd>{node.snr !== undefined ? `${node.snr.toFixed(1)} dB` : '—'}</dd>
-        <dt>Battery</dt><dd>{node.batteryLevel !== undefined ? `${node.batteryLevel}%` : '—'}</dd>
+        <dt>Battery</dt><dd>{batteryLabel(node.batteryLevel)}</dd>
         <dt>Voltage</dt><dd>{node.voltage !== undefined ? `${node.voltage.toFixed(2)} V` : '—'}</dd>
         <dt>Channel util.</dt><dd>{node.channelUtilization !== undefined ? `${node.channelUtilization.toFixed(1)}%` : '—'}</dd>
         <dt>Air util TX</dt><dd>{node.airUtilTx !== undefined ? `${node.airUtilTx.toFixed(2)}%` : '—'}</dd>

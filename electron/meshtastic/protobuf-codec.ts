@@ -245,6 +245,9 @@ export interface MeshPacket {
   position?: { lat: number; lon: number; altitude: number; time: number; precisionBits?: number };
   nodeInfo?: { id?: string; longName: string; shortName: string; hwModel: number; macaddr: string; role?: number };
   telemetry?: {
+    /** Measurement time set by the originating node (ms epoch), preserved
+     *  across relay/MQTT rebroadcast — used to drop stale duplicate echoes. */
+    measuredAt?: number;
     batteryLevel?: number;
     voltage?: number;
     channelUtilization?: number;
@@ -625,9 +628,13 @@ function decodeAppPayload(pkt: MeshPacket, portnum: number, payload: Uint8Array)
       case TELEMETRY: {
         const t = fromBinary!(Proto.Telemetry.TelemetrySchema, payload) as any;
         const v = t.variant;
+        // Telemetry.time is a fixed32 epoch (seconds) stamped by the
+        // originating node; convert to ms. 0/unset → leave undefined.
+        const measuredAt = typeof t.time === 'number' && t.time > 0 ? t.time * 1000 : undefined;
         if (v?.case === 'deviceMetrics') {
           const dm = v.value;
           pkt.telemetry = {
+            measuredAt,
             batteryLevel: dm.batteryLevel,
             voltage: dm.voltage,
             channelUtilization: dm.channelUtilization,
@@ -637,6 +644,7 @@ function decodeAppPayload(pkt: MeshPacket, portnum: number, payload: Uint8Array)
         } else if (v?.case === 'environmentMetrics') {
           const em = v.value;
           pkt.telemetry = {
+            measuredAt,
             temperature: em.temperature,
             humidity: em.relativeHumidity,
             barometricPressure: em.barometricPressure,
@@ -644,12 +652,14 @@ function decodeAppPayload(pkt: MeshPacket, portnum: number, payload: Uint8Array)
         } else if (v?.case === 'powerMetrics') {
           const pm = v.value;
           pkt.telemetry = {
+            measuredAt,
             voltage: pm.ch1Voltage,
             chPower: pm.ch1Current,
           };
         } else if (v?.case === 'localStats') {
           const ls = v.value;
           pkt.telemetry = {
+            measuredAt,
             uptimeSeconds: ls.uptimeSeconds,
             channelUtilization: ls.channelUtilization,
             airUtilTx: ls.airUtilTx,
@@ -657,7 +667,7 @@ function decodeAppPayload(pkt: MeshPacket, portnum: number, payload: Uint8Array)
             numTotalNodes: ls.numTotalNodes,
           };
         } else {
-          pkt.telemetry = {};
+          pkt.telemetry = { measuredAt };
         }
         break;
       }

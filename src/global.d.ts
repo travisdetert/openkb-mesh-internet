@@ -286,8 +286,8 @@ declare global {
 
   interface TelemetryHistoryRow {
     node_num: number;
-    battery: number;
-    voltage: number;
+    battery: number | null;
+    voltage: number | null;
     chan_util: number;
     air_util_tx: number;
     ts: number;
