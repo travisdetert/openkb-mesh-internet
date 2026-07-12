@@ -15,7 +15,7 @@ duplicated, divergent code.
 ## Decision
 
 Adopt the **quality bar set by the Map and Nodes panels** as the standard every panel aspires
-to, documented in [`../PANELS_PLAN.md`](../PANELS_PLAN.md). The bar: master/detail layout,
+to, documented in [`../PANELS.md`](../PANELS.md). The bar: master/detail layout,
 `Live / Data / Settings`-style subnav where it helps, CSV export for tabular data, real-time
 data via live IPC events (not polling), cross-panel actions (Message / Traceroute /
 Jump-to-Node), inline diagnostic copy, stale/fresh visualization, hover tooltips, and
@@ -27,7 +27,7 @@ active-state highlighting.
   rampant copy-paste of subnav / CSV / node-naming logic.
 - **A heavy shared component framework up front** — premature; the bar is a *standard* first,
   with shared components (`Subnav`, `csv.ts`, `nodes.ts`, extracted Map components) extracted
-  as the duplication becomes real (see the refactor candidates in `PANELS_PLAN.md`).
+  as the duplication becomes real (see the refactor candidates, since realised, in `PANELS.md`).
 
 ## Consequences
 
@@ -36,5 +36,9 @@ active-state highlighting.
   node-naming helpers) so panels converge instead of duplicating.
 - The bar is aspirational, not a gate — existing panels are brought up to it incrementally,
   and the Phase B/C boundary is intentionally fluid.
-- `PANELS_PLAN.md` remains the living roadmap; this ADR records *why* the bar exists and that
+- `PANELS_PLAN.md` was the living roadmap; this ADR records *why* the bar exists and that
   it's the agreed standard.
+
+> Update 2026-07-09: the build roadmap has been realised and `PANELS_PLAN.md`
+> retired; the living panel reference is now [`../PANELS.md`](../PANELS.md). The
+> decision above is unchanged.

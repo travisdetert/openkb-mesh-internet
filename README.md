@@ -93,6 +93,7 @@ Start at [`docs/adr/README.md`](docs/adr/README.md) for the index.
 
 ## More reading
 
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — process model, data flow, and how a radio byte becomes a panel pixel (with diagrams)
+- [`docs/PANELS.md`](docs/PANELS.md) — the panel inventory and the shared quality bar
 - [`docs/cross-country-and-hop-limits.md`](docs/cross-country-and-hop-limits.md) — why the mesh can't carry traffic from California to New York
-- [`docs/PANELS_PLAN.md`](docs/PANELS_PLAN.md) — internal quality bar for panels
 - [`docs/adr/`](docs/adr/) — architecture decision records

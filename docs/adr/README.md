@@ -42,6 +42,7 @@ Skip it for routine, easily-reversible choices (a helper's name, a CSS tweak).
 | [0007](0007-context-isolated-ipc-bridge.md) | Context-isolated IPC bridge as the only renderer API | Accepted |
 | [0008](0008-unified-tailable-log-file.md) | Unified, tail-able log file | Accepted |
 | [0009](0009-panel-quality-bar.md) | A shared "quality bar" for panels | Accepted |
+| [0010](0010-in-memory-event-bus.md) | An in-memory event bus with a concept-translation seam | Accepted |
 
 > ADRs 0002–0009 were **backfilled** on 2026-06-14 to document decisions already
 > embodied in the codebase. The "Date" field in each records when the decision was
