@@ -3,6 +3,7 @@ import type { TracerouteRecord } from '../../hooks/useMesh';
 import { useActiveConnId } from '../../hooks/MeshContext';
 import { PanelChannelHeader } from '../PanelChannelHeader';
 import { downloadCsv } from '../../lib/csv';
+import { Subnav } from '../Subnav';
 
 interface Props {
   nodes: NodeRecord[];
@@ -11,7 +12,7 @@ interface Props {
   onMessageNode?: (num: number) => void;
 }
 
-type Tab = 'run' | 'history' | 'map';
+type Tab = 'run' | 'history' | 'compare' | 'map';
 
 const TILE_SIZE = 256;
 const SVG_W = 1200;
@@ -77,19 +78,23 @@ export function TraceroutePanel({ nodes, state, traceroutes, onMessageNode }: Pr
 
       <PanelChannelHeader state={state} label="TRACING FROM" />
 
-      <div className="subnav">
-        <button className={'subnav-btn' + (tab === 'run' ? ' active' : '')} onClick={() => setTab('run')}>Run</button>
-        <button className={'subnav-btn' + (tab === 'history' ? ' active' : '')} onClick={() => setTab('history')}>
-          History
-          {traceroutes.length > 0 && <span className="subnav-count">{traceroutes.length}</span>}
-        </button>
-        <button className={'subnav-btn' + (tab === 'map' ? ' active' : '')} onClick={() => setTab('map')}>Map</button>
-        <div style={{ marginLeft: 'auto' }}>
-          {traceroutes.length > 0 && (
-            <button className="ghost" style={{ padding: '4px 10px', fontSize: 12 }} onClick={exportCsv}>⇩ CSV</button>
-          )}
-        </div>
-      </div>
+      <Subnav
+        items={[
+          { key: 'run', label: 'Run' },
+          { key: 'history', label: 'History', count: traceroutes.length },
+          { key: 'compare', label: 'Compare' },
+          { key: 'map', label: 'Map' },
+        ]}
+        active={tab}
+        onChange={setTab}
+        trailing={
+          <div style={{ marginLeft: 'auto' }}>
+            {traceroutes.length > 0 && (
+              <button className="ghost" style={{ padding: '4px 10px', fontSize: 12 }} onClick={exportCsv}>⇩ CSV</button>
+            )}
+          </div>
+        }
+      />
 
       {tab === 'run' && (
         <RunTab
@@ -108,6 +113,9 @@ export function TraceroutePanel({ nodes, state, traceroutes, onMessageNode }: Pr
           setSelectedKey={setSelectedKey}
           onMessageNode={onMessageNode}
         />
+      )}
+      {tab === 'compare' && (
+        <CompareTab nodes={nodes} traceroutes={traceroutes} myNum={state.myInfo?.myNodeNum} onMessageNode={onMessageNode} />
       )}
       {tab === 'map' && (
         <MapTab
@@ -595,6 +603,142 @@ function HopReliability({ entry, nodes, myNum }: { entry: { traces: TracerouteRe
 // Map tab
 // ─────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────
+// Compare tab — overlay 2+ traces to see where the path drifted
+// ─────────────────────────────────────────────────────────────────────
+
+function traceKey(t: TracerouteRecord): string { return `${t.to}-${t.sentAt}`; }
+
+function CompareTab({ nodes, traceroutes, myNum, onMessageNode }: {
+  nodes: NodeRecord[];
+  traceroutes: TracerouteRecord[];
+  myNum?: number;
+  onMessageNode?: (num: number) => void;
+}) {
+  const answered = useMemo(
+    () => traceroutes.filter((t) => t.response).sort((a, b) => b.sentAt - a.sentAt),
+    [traceroutes],
+  );
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const selectedTraces = useMemo(
+    () => answered.filter((t) => selected.has(traceKey(t))),
+    [answered, selected],
+  );
+
+  // Path = [me?, ...route, dest]. The intersection across all selected traces
+  // is the stable backbone; any node not in it is where a path drifted.
+  const commonSet = useMemo(() => {
+    const paths = selectedTraces.map((t) => [
+      ...(myNum != null ? [myNum] : []),
+      ...t.response!.route,
+      t.to,
+    ]);
+    if (paths.length === 0) return new Set<number>();
+    let acc = new Set<number>(paths[0]);
+    for (const p of paths.slice(1)) acc = new Set([...acc].filter((n) => p.includes(n)));
+    return acc;
+  }, [selectedTraces, myNum]);
+
+  const distinctPaths = new Set(selectedTraces.map((t) => t.response!.route.join('>'))).size;
+  const hopCounts = selectedTraces.map((t) => t.response!.route.length + 1);
+
+  const toggle = (k: string) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(k)) next.delete(k); else next.add(k);
+    return next;
+  });
+
+  if (answered.length < 2) {
+    return <div className="card"><div className="empty">Need at least two answered traceroutes to compare. Run more from the Run tab.</div></div>;
+  }
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 16 }}>
+      <div className="card" style={{ padding: 6, maxHeight: 620, overflowY: 'auto' }}>
+        <div style={{ fontSize: 10.5, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.06em', padding: '6px 8px' }}>
+          Pick traces ({selected.size} selected)
+        </div>
+        {answered.map((t) => {
+          const k = traceKey(t);
+          const hops = t.response!.route.length + 1;
+          return (
+            <label key={k} className="convo-item" style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+              <input type="checkbox" checked={selected.has(k)} onChange={() => toggle(k)} />
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ color: colorForNode(t.to) }}>{nameFor(nodes, t.to)}</span>
+                <span style={{ color: 'var(--text-faint)', fontSize: 11, marginLeft: 6 }}>{hops} hop{hops === 1 ? '' : 's'}</span>
+                <div style={{ fontSize: 10.5, color: 'var(--text-faint)', fontFamily: 'var(--mono)' }}>{new Date(t.sentAt).toLocaleString()}</div>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+
+      <div>
+        {selectedTraces.length < 2 ? (
+          <div className="card"><div className="empty">Select two or more traces on the left to overlay their paths.</div></div>
+        ) : (
+          <div className="card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+              <h2 style={{ margin: 0 }}>Path comparison</h2>
+              <span style={{ fontSize: 12, color: 'var(--text-faint)', fontFamily: 'var(--mono)' }}>
+                {distinctPaths} distinct path{distinctPaths === 1 ? '' : 's'} · {Math.min(...hopCounts)}–{Math.max(...hopCounts)} hops
+              </span>
+            </div>
+            <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--text-dim)' }}>
+              {distinctPaths === 1
+                ? 'All selected traces took the same path — the route is stable.'
+                : 'Nodes outlined in amber appear in some but not all selected traces — that\'s where the path drifted (a relay came or went).'}
+            </p>
+            {selectedTraces.map((t) => {
+              const chain = [
+                ...(myNum != null ? [{ id: myNum, label: 'me' }] : []),
+                ...t.response!.route.map((id) => ({ id, label: nameFor(nodes, id) })),
+                { id: t.to, label: nameFor(nodes, t.to) },
+              ];
+              return (
+                <div key={traceKey(t)} style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-faint)', fontFamily: 'var(--mono)', marginBottom: 4 }}>
+                    {new Date(t.sentAt).toLocaleString()} · {chain.length - 1} hops · RSSI {t.response!.rxRssi} · SNR {t.response!.rxSnr.toFixed(1)}
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, fontFamily: 'var(--mono)', fontSize: 12.5 }}>
+                    {chain.map((hop, i) => {
+                      const isEnd = i === 0 || i === chain.length - 1;
+                      const drift = !isEnd && !commonSet.has(hop.id);
+                      return (
+                        <React.Fragment key={i}>
+                          <button
+                            onClick={() => onMessageNode && hop.id !== myNum && onMessageNode(hop.id)}
+                            disabled={hop.id === myNum || !onMessageNode}
+                            title={drift ? 'Differs across selected traces' : onMessageNode && hop.id !== myNum ? `Message ${hop.label}` : ''}
+                            style={{ border: 'none', background: 'transparent', padding: 0, cursor: hop.id === myNum || !onMessageNode ? 'default' : 'pointer' }}
+                          >
+                            <span style={{
+                              padding: '3px 8px', background: 'var(--bg)',
+                              border: `1px solid ${drift ? 'var(--warn)' : 'var(--line)'}`,
+                              borderRadius: 10,
+                              color: i === 0 ? 'var(--accent)' : i === chain.length - 1 ? 'var(--good)' : 'var(--text)',
+                              display: 'inline-block',
+                            }}>
+                              {hop.label}
+                            </span>
+                          </button>
+                          {i < chain.length - 1 && <span style={{ color: 'var(--text-faint)' }}>→</span>}
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MapTab({ nodes, state, traceroutes, selectedKey, setSelectedKey }: {
   nodes: NodeRecord[];
   state: ConnectionState;
@@ -626,7 +770,6 @@ function MapTab({ nodes, state, traceroutes, selectedKey, setSelectedKey }: {
   }
 
   // Build the route node chain for the selected trace.
-  const myNode = nodes.find((n) => n.num === myNum);
   const routeNumChain = selected ? [myNum, ...selected.response!.route, selected.to].filter((n): n is number => typeof n === 'number') : [];
   const routeNodes = routeNumChain.map((num) => nodes.find((n) => n.num === num)).filter((n): n is NodeRecord => !!n);
   const positionedRouteNodes = routeNodes.filter((n) => n.lat !== undefined && n.lon !== undefined && (n.lat !== 0 || n.lon !== 0));
@@ -692,7 +835,7 @@ function MapTab({ nodes, state, traceroutes, selectedKey, setSelectedKey }: {
   );
 }
 
-function RouteMap({ routeNodes, allRouteNumbers, allNodes }: { routeNodes: NodeRecord[]; allRouteNumbers: number[]; allNodes: NodeRecord[] }) {
+function RouteMap({ routeNodes, allRouteNumbers: _allRouteNumbers, allNodes: _allNodes }: { routeNodes: NodeRecord[]; allRouteNumbers: number[]; allNodes: NodeRecord[] }) {
   if (routeNodes.length < 2) return null;
 
   // Compute bbox + zoom that fits.
