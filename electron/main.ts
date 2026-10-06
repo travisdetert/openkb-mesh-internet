@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session, systemPreferences } from 'electron';
+import { app, BrowserWindow, ipcMain, session, shell, systemPreferences } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { MeshManager } from './meshtastic/manager';
@@ -93,6 +93,28 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
+
+  // Keep the app window on the app's own origin. Chat text from anyone on the
+  // mesh is linkified (SmartText), and the preload re-runs on every navigation
+  // in this webContents — so a remote page loaded here would be handed the
+  // full window.mesh API (reconfigure, read channel keys, factory reset).
+  // http(s) links go to the system browser; everything else is dropped.
+  const appUrl = process.env.VITE_DEV_SERVER_URL;
+  const isAppUrl = (url: string) =>
+    appUrl ? url.startsWith(appUrl) : url.startsWith('file://');
+  const openOutside = (url: string) => {
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+    else console.warn(`[nav] refused non-http link: ${url.slice(0, 80)}`);
+  };
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openOutside(url);
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (e, url) => {
+    if (isAppUrl(url)) return;
+    e.preventDefault();
+    openOutside(url);
+  });
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.maximize();

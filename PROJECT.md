@@ -33,8 +33,9 @@ v1 is done when all of these are true.
 - [x] Lint clean + build/compile/type-check passes (CI runs the same commands) —
       `npm run lint` (0 errors, 13 `exhaustive-deps` warnings) and `npm run build` are
       green; `.github/workflows/ci.yml` runs both on GitHub (`origin`)
-- [ ] Security pass run; findings fixed or accepted (SECURITY.md)
-- [x] Notable decisions recorded (docs/adr/ — 0001–0010)
+- [ ] Security pass run; findings fixed or accepted (SECURITY.md) — first pass
+      2026-10-06; navigation High fixed (ADR 0011); Electron 28 upgrade still open
+- [x] Notable decisions recorded (docs/adr/ — 0001–0011)
 - [x] Docs current: each subsystem documented + diagrammed, updated with the change —
       architecture (`docs/ARCHITECTURE.md`, Mermaid data-flow + sequence diagrams) and
       panels (`docs/PANELS.md`) documented; individual `src/lib` modules still undocumented
@@ -44,7 +45,8 @@ v1 is done when all of these are true.
   trust, ⚡ external-power + solar health, per-node voltage-trend chips,
   declining-voltage callouts, percentile congestion readouts, node detail drawer)
   landed on `telemetry-power-fixes`.
-- **Next:** Run the first security pass (see SECURITY.md); verify packaged Windows/Linux builds end-to-end on real hardware.
+- **Next:** Upgrade Electron 28 → a supported major (open High from the first
+  security pass), then add a renderer CSP; verify packaged Windows/Linux builds end-to-end on real hardware.
 - **Later:** Per-module docs for `src/lib`; broaden explainer panels; richer
   traceroute/coverage visualizations; evaluate Zigbee/Thread hardware notes
   (see `docs/zigbee-thread-hardware.md`).
