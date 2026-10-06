@@ -119,7 +119,7 @@ function createWindow() {
   // Forward renderer console messages to the main process stdout so we can
   // tail /tmp/electron.log and see [voice], [main], and serial-write lines
   // in one stream. Level 0=verbose, 1=info, 2=warning, 3=error.
-  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+  mainWindow.webContents.on('console-message', (_e, level, message, _line, _sourceId) => {
     const tag = level === 3 ? '[renderer error]' : level === 2 ? '[renderer warn]' : '[renderer]';
     console.log(`${tag} ${message}`);
   });

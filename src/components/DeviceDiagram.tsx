@@ -136,7 +136,7 @@ function featureStyle(kind: InternalFeature['kind']): { fill: string; stroke: st
 }
 
 function ButtonMark({
-  button, px, py, margin, boardH,
+  button, px, py, margin: _margin, boardH: _boardH,
 }: { button: DeviceButton; px: (x: number) => number; py: (y: number) => number; margin: number; boardH: number }) {
   const cx = px(button.x);
   const cy = py(button.y);

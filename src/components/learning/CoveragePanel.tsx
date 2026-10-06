@@ -374,7 +374,7 @@ function HeatmapTab({ myNode, prepared, fit, freqMHz, nodes, onMessageNode }: {
   );
 }
 
-function CoverageMap({ myNode, prepared, nodes, onMessageNode }: { myNode: NodeRecord; prepared: PreparedSample[]; nodes: NodeRecord[]; onMessageNode?: (n: number) => void }) {
+function CoverageMap({ myNode, prepared, nodes: _nodes, onMessageNode }: { myNode: NodeRecord; prepared: PreparedSample[]; nodes: NodeRecord[]; onMessageNode?: (n: number) => void }) {
   // Bbox: include me + all samples
   const lats = [myNode.lat!, ...prepared.map((s) => s.lat)];
   const lons = [myNode.lon!, ...prepared.map((s) => s.lon)];
@@ -731,7 +731,7 @@ function drawCoverage(ctx: CanvasRenderingContext2D, w: number, h: number, sampl
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 
-function estimateReach(fit: Fit, budgetDb: number, freqMHz: number): number {
+function estimateReach(fit: Fit, budgetDb: number, _freqMHz: number): number {
   // RSSI at distance d (km): intercept + slope * log10(d)
   // Reach is where RSSI = sensitivity. budget = TX_eirp + Rx_gain - sensitivity (approx)
   // We approximate by solving for log10(d) such that path_loss = budget assuming

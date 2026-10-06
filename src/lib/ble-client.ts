@@ -92,7 +92,6 @@ function withGatt<T>(session: BleSession, fn: () => Promise<T>): Promise<T> {
 
 const sessions = new Map<string, BleSession>(); // connId → session
 let txFrameUnsubscribe: (() => void) | null = null;
-let disconnectReqUnsubscribe: (() => void) | null = null;
 
 function bytesToBase64(buf: ArrayBuffer | Uint8Array): string {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
@@ -230,7 +229,7 @@ async function closeSession(session: BleSession): Promise<void> {
 export function initBleBridge(): void {
   if (txFrameUnsubscribe) return; // already initialized
   txFrameUnsubscribe = window.mesh.onBleTxFrame((p) => { void handleTxFrame(p); });
-  disconnectReqUnsubscribe = window.mesh.onBleDisconnectRequest((p) => { void handleDisconnectRequest(p); });
+  window.mesh.onBleDisconnectRequest((p) => { void handleDisconnectRequest(p); });
 }
 
 /**

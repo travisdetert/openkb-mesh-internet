@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useActiveConnId } from '../../hooks/MeshContext';
 
 const MAX_CHANNELS = 8;
@@ -330,7 +330,7 @@ export function ChannelsPanel({ state, embedded = false }: Props) {
                     <button
                       className="ghost"
                       style={{ padding: '3px 8px', fontSize: 11 }}
-                      onClick={async () => { try { await navigator.clipboard.writeText(pskInput); setMsg('Copied PSK hex.'); } catch {} }}
+                      onClick={async () => { try { await navigator.clipboard.writeText(pskInput); setMsg('Copied PSK hex.'); } catch { /* clipboard best-effort; ignore */ } }}
                       title="Copy PSK to clipboard"
                     >Copy</button>
                   </div>

@@ -176,9 +176,8 @@ const PATTERNS: PatternDef[] = [
     name: 'Half-wave dipole',
     gainDbi: 2.15,
     description: 'The simplest practical antenna. Donut-shaped pattern: maximum gain perpendicular to the wire, null along the wire axis. Most stock Meshtastic antennas are quarter-wave monopoles approximating a dipole.',
-    pattern: (a) => {
+    pattern: (_a) => {
       // sin²(θ) pattern, peak at 90°, null at 0° and 180°. Map angleDeg as horizontal (broadside is 0).
-      const rad = (a * Math.PI) / 180;
       // We render in the H-plane (top-down view), where dipole is omnidirectional, so gain ≈ 0 dB at all angles.
       return 0;
     },

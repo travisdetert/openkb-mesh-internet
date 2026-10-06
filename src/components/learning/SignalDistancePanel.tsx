@@ -395,7 +395,7 @@ function SampleDetail({ sample, preset, onClose, onMessageNode }: { sample: Samp
 // Trend tab — per-node RSSI over time
 // ─────────────────────────────────────────────────────────────────────
 
-function TrendTab({ nodes, myNode, onMessageNode }: { nodes: NodeRecord[]; myNode?: NodeRecord; onMessageNode?: (n: number) => void }) {
+function TrendTab({ nodes, myNode: _myNode, onMessageNode }: { nodes: NodeRecord[]; myNode?: NodeRecord; onMessageNode?: (n: number) => void }) {
   const [scale, setScale] = useState<'1h' | '6h' | '24h' | '7d'>('24h');
   const [samples, setSamples] = useState<PathLossSample[]>([]);
   const [loading, setLoading] = useState(false);

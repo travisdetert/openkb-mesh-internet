@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import type { TabId } from '../TopNav';
 import { channelHash, channelHashHex, pskFingerprint, pskLabel } from '../../channel-identity';
 import { LearningModeBadge, LearningSeeAlso } from './LearningChrome';
@@ -297,8 +297,6 @@ function PublicMeshCheck({ state, go }: { state: ConnectionState; go: (id: TabId
     tone = 'warn';
     detail = <p style={{ margin: 0 }}>Custom configuration — you're on a private mesh.</p>;
   }
-
-  const fixUrl = `https://www.openstreetmap.org/`; // placeholder; not used here
 
   const toneColor = tone === 'good' ? 'var(--good)' : tone === 'warn' ? 'var(--warn)' : tone === 'bad' ? 'var(--bad)' : '#6db4ff';
   const toneBg   = tone === 'good' ? 'rgba(102,211,154,0.06)' : tone === 'warn' ? 'rgba(255,180,80,0.06)' : 'rgba(255,100,120,0.06)';

@@ -162,7 +162,7 @@ function DemoTab({ nodes, go }: { nodes: NodeRecord[]; go?: (id: TabId) => void 
 // Your mesh tab — real topology
 // ─────────────────────────────────────────────────────────────────────
 
-function YourMeshTab({ nodes, links, myNode, state, go }: { nodes: NodeRecord[]; links: LinkRow[]; myNode?: NodeRecord; state: ConnectionState; go?: (id: TabId) => void }) {
+function YourMeshTab({ nodes, links, myNode: _myNode, state, go }: { nodes: NodeRecord[]; links: LinkRow[]; myNode?: NodeRecord; state: ConnectionState; go?: (id: TabId) => void }) {
   const myNum = state.myInfo?.myNodeNum;
 
   // Hops distribution
@@ -374,8 +374,6 @@ function MathTab({ state, nodes }: { state: ConnectionState; nodes: NodeRecord[]
   const preset = LORA_PRESETS.find((p) => p.id.toLowerCase() === presetId) ?? LORA_PRESETS[0];
 
   const PAYLOAD_SIZES = [10, 50, 100, 200];
-  // Airtime ratio per byte (derived from each preset's 50-byte airtime, assuming linear with size — approximation)
-  const airtimePerByte = preset ? (preset.airtimeSec_50byte ?? 1) / 50 : 0;
 
   // Channel utilization model:
   // Each message = msgsPerHr per node × meshSize / 3600 s in air per second per node.

@@ -59,7 +59,7 @@ function shortAgo(ms: number): string {
 }
 
 export function HomePage({
-  go, state, nodes, nodesCount, positionedCount, lastPacketAt, packetsLast60s,
+  go, state, nodes, nodesCount, positionedCount, lastPacketAt: _lastPacketAt, packetsLast60s,
   messages, recentPackets, connections, activeConnId, setActiveConnId,
   unreadMessages, pendingTraces, onShowTour, openDm,
 }: Props) {
@@ -75,7 +75,6 @@ export function HomePage({
   }, []);
 
   const anyReady = connections.some((c) => c.state.status === 'ready');
-  const anyConn = connections.length > 0;
   const myNode = state.myInfo?.myNodeNum ? nodes.find((n) => n.num === state.myInfo!.myNodeNum) : undefined;
   const chanUtil = myNode?.channelUtilization;
 
@@ -306,7 +305,7 @@ function DTStat({ label, value, tone, color }: { label: string; value: string; t
 // ────────────────────────────────────────────────────────────────────
 
 function RecentActivityCard({
-  messages, recentPackets, nodes, state, go, openDm,
+  messages, recentPackets: _recentPackets, nodes, state, go, openDm,
 }: {
   messages: TextMessage[];
   recentPackets: Array<MeshPacketLite & { receivedAt: number }>;

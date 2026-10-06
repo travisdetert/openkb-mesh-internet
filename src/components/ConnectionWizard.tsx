@@ -4,7 +4,6 @@ import { SettingsPanel } from './panels/SettingsPanel';
 import { ChannelsPanel } from './panels/ChannelsPanel';
 import { MqttPanel } from './panels/MqttPanel';
 import { useBleScan, looksMeshtastic } from './BleScanModal';
-import type { TabId } from './TopNav';
 import { ROLE_NAMES } from '../lib/device-roles';
 
 function pskDescription(pskLength: number): string {
@@ -13,15 +12,6 @@ function pskDescription(pskLength: number): string {
   if (pskLength === 16) return 'AES-128';
   if (pskLength === 32) return 'AES-256';
   return `${pskLength}-byte custom`;
-}
-
-function confidenceBadge(c: PortConfidence): string {
-  switch (c) {
-    case 'confirmed': return '✓';
-    case 'likely':    return '◯';
-    case 'possible':  return '·';
-    default:          return ' ';
-  }
 }
 
 interface Props {
@@ -84,7 +74,7 @@ export function ConnectionWizard({
   readyAt,
   lastPacketAt,
   packetsLast60s,
-  go,
+  go: _go,
   initialAdding,
   onAddingChange,
 }: Props) {
@@ -152,21 +142,6 @@ export function ConnectionWizard({
       setSelected(next?.path ?? '');
     }
   }, [connections.length]);
-
-  const connect = async () => {
-    if (!selected) return;
-    setBusy(true);
-    setErr('');
-    setAttempted(true);
-    try {
-      const id = await window.mesh.connect(selected);
-      setActiveConnId(id);
-      setAdding(false);
-      setSelected('');
-    }
-    catch (e: any) { setErr(e?.message ?? String(e)); }
-    finally { setBusy(false); }
-  };
 
   const connectBluetooth = async () => {
     setBusy(true);

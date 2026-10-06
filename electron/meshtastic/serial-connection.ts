@@ -6,7 +6,6 @@ import {
   type MeshtasticTransport,
   type PortStats,
   type DeviceEvent,
-  type DeviceEventKind,
   type ResetProfile,
   type TransportKind,
   freshStats,

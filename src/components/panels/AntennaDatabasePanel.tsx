@@ -12,10 +12,9 @@ import { useOwnedAntennas } from '../../hooks/useOwnedRosters';
  * antenna spec to a node without retyping dBi values.
  */
 
-interface Props {
-  // Currently no props — purely reference + ownership UI. Future: filter
-  // by what's compatible with the user's owned radios.
-}
+// Currently no props — purely reference + ownership UI. Future: filter
+// by what's compatible with the user's owned radios.
+type Props = Record<string, never>;
 
 export function AntennaDatabasePanel(_props: Props) {
   const [search, setSearch] = useState('');

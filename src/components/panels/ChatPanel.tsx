@@ -830,7 +830,7 @@ function ConversationsView(props: ConversationsProps) {
     el.style.height = 'auto';
     el.style.height = Math.max(72, Math.min(el.scrollHeight, 220)) + 'px';
   }, [text]);
-  return _Conversations({ ...props, composeRef });
+  return ConversationsBody({ ...props, composeRef });
 }
 interface ConversationsProps {
   convos: ConvoItem[];
@@ -934,7 +934,7 @@ function NewDmPicker({
   );
 }
 
-function _Conversations({
+function ConversationsBody({
   convos, effective, setTarget, filtered, messages, nodes, state, myNum,
   text, setText, send, sending, sendProgress, resend, scrollRef, composeRef,
   canned, ackOverride, setAckOverride, sharePosition,

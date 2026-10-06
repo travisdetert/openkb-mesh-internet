@@ -368,7 +368,7 @@ function severityIcon(s: Severity): string {
   return s === 'critical' ? '✗' : s === 'warn' ? '!' : s === 'ok' ? '✓' : 'i';
 }
 
-export function MeshHealthPanel({ state, nodes, traces, links, recentPackets, packetsLast60s, lastPacketAt, go }: Props) {
+export function MeshHealthPanel({ state, nodes, traces, links: _links, recentPackets, packetsLast60s, lastPacketAt, go }: Props) {
   const sections: Section[] = useMemo(() => {
     const radioFindings = checkOwnRadio(state);
     const privacyFindings = checkPrivacy(state);

@@ -31,8 +31,6 @@ interface Check {
   link?: { label: string; to: TabId };
 }
 
-const BROADCAST = 0xffffffff;
-
 function ageLabel(secs?: number): string {
   if (!secs) return 'never';
   const d = Math.max(0, Math.floor(Date.now() / 1000) - secs);

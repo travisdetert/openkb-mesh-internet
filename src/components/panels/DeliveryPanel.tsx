@@ -227,8 +227,6 @@ function TraceDetail({ trace, nodes, state }: { trace: PacketTrace; nodes: NodeR
         <div className="trace-timeline">
           {events.map((e, i) => {
             const offsetMs = e.ts - sentTs;
-            const senderNum = e.fromNode ?? trace.from;
-            const isMe = senderNum === state.myInfo?.myNodeNum;
             return (
               <div key={i} className="trace-row">
                 <div className="trace-time">+{fmtMs(offsetMs)}</div>

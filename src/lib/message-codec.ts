@@ -26,7 +26,6 @@
 
 const CHUNK_MARKER = '\x02CK';
 const MAX_BYTES_PER_CHUNK = 200; // payload budget per chunk (leaves room for header + safety margin)
-const HEADER_OVERHEAD = 16;       // approx \x02CK<4hex>:<3digit>/<3digit>:
 
 /** Hard upper bound on chunked message size (in chunks). Keeps duty cycle sane. */
 export const MAX_CHUNKS = 20;

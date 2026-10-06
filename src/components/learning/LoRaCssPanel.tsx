@@ -163,7 +163,7 @@ function CompareTab({ cssModulations, presetId, setPresetId, activePresetName }:
 // Math tab — interactive SF / BW / CR with live derivations
 // ─────────────────────────────────────────────────────────────────────
 
-function MathTab({ activePresetName }: { activePresetName?: string }) {
+function MathTab({ activePresetName: _activePresetName }: { activePresetName?: string }) {
   const [sf, setSf] = useState(11);
   const [bwKhz, setBwKhz] = useState(250);
   const [cr, setCr] = useState(5);

@@ -441,7 +441,7 @@ function PerLinkTab({
 }
 
 function LinkDetail({
-  row, preset, region, txPower, txGain, rxGain, feedlineLoss, obstructionLoss, fade, myBudget,
+  row, preset, region, txPower, txGain, rxGain, feedlineLoss, obstructionLoss: _obstructionLoss, fade: _fade, myBudget: _myBudget,
   onMessageNode, go,
 }: any) {
   const { node, distKm, measuredLoss, fsplDb, excess, margin } = row;

@@ -23,6 +23,8 @@ Other scripts:
 | --- | --- |
 | `npm run dev` | Vite dev server only (no Electron shell) |
 | `npm run build` | Type-check + production build of renderer and main |
+| `npm run lint` | ESLint over renderer + main (CI runs this and `build`) |
+| `npm run screenshots` | Regenerate `docs/screenshots/` from `screenshots.config.mjs` |
 | `npm run stop` | Kill any running instance |
 | `npm run restart` | Stop and start again |
 

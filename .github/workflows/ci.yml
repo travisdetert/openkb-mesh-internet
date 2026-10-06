@@ -1,0 +1,31 @@
+name: CI
+
+# The lint + build gate — the same commands a developer runs locally
+# (`npm run lint`, `npm run build`), so CI can't pass what a workstation fails.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  lint-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # Skip lifecycle scripts: `postinstall` rebuilds native modules
+      # (better-sqlite3, serialport) against Electron, which the lint pass and
+      # the tsc/Vite type-check + bundle do not need. This keeps CI fast and
+      # avoids a native toolchain dependency for a pure static-analysis gate.
+      - run: npm ci --ignore-scripts
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check + build
+        run: npm run build

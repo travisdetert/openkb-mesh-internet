@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMeshContext } from '../../hooks/MeshContext';
-import type { ConnectionView } from '../../hooks/useMesh';
 import {
   emptyInsights,
   foldLines,
@@ -8,7 +7,6 @@ import {
   BOOT_PHASE_LABELS,
   BOOT_PHASE_HINTS,
   type DeviceInsights,
-  type BootPhase,
   type CrashRecord,
 } from '../../lib/parse-device-log';
 
@@ -50,6 +48,7 @@ function base64ToBytes(b64: string): Uint8Array {
 // escapes — DEBUG cyan/blue, INFO green, WARN yellow, ERROR red, etc.
 // We parse those out into typed segments so the renderer can show them
 // as actual colours, plus produce a plain-text version for copy/CSV.
+// eslint-disable-next-line no-control-regex -- ANSI escape stripping legitimately matches the ESC control char
 const ANSI_CSI_RE = /\x1b\[([0-9;?]*)([a-zA-Z])/g;
 // Standard SGR foreground colours mapped to readable hues for our dark theme.
 const ANSI_FG: Record<number, string> = {

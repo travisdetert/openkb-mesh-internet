@@ -46,16 +46,13 @@ const GROUP_ORDER: Array<{ key: TabGroup; label: string }> = [
 
 export function Sidebar({
   active, onSelect, state, myNode, badges,
-  nodesCount, positionedCount, packetsLast60s, unreadMessages, pulseKey, chatPulseKey,
+  nodesCount: _nodesCount, positionedCount: _positionedCount, packetsLast60s: _packetsLast60s, unreadMessages, pulseKey, chatPulseKey,
   connections, activeConnId, onSelectConnection,
 }: Props) {
   const { pendingReboots } = useMeshContext();
   const liveNodeNums = new Set(connections.map((c) => c.state.myInfo?.myNodeNum).filter((n) => !!n) as number[]);
   const pill = pillFor(state, myNode);
   const isReady = state.status === 'ready';
-  const battery = myNode?.batteryLevel;
-  const batteryTone = battery === undefined ? 'dim' : battery > 50 ? 'good' : battery > 20 ? 'warn' : 'bad';
-  const batteryColor = batteryTone === 'good' ? 'var(--good)' : batteryTone === 'warn' ? 'var(--warn)' : batteryTone === 'bad' ? 'var(--bad)' : 'var(--text-faint)';
   const requiresConnection = (id: TabId) => id !== 'home' && id !== 'connect' && !id.startsWith('learn');
 
   return (
